@@ -1,0 +1,28 @@
+# =========================
+# Application Configuration
+# =========================
+
+APP_PORT=:8080
+APP_ENV=development
+
+
+# =========================
+# Database Configuration
+# =========================
+# Example (go-sql-driver/mysql):
+# username:password@tcp(host:port)/database_name?parseTime=true
+
+# Example if localhost (DOUBLE CHECK):
+DB_DSN=root:@tcp(localhost:3306)/drexa?parseTime=true
+
+DB_MAX_IDLE_CONNS=10
+DB_MAX_OPEN_CONNS=100
+DB_CONN_MAX_LIFETIME=1h
+
+
+# =========================
+# JWT Configuration
+# =========================
+
+JWT_SECRET=super-secret-jwt-key
+JWT_EXPIRATION=24h
