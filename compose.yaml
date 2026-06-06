@@ -46,6 +46,16 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  stripe-cli:
+    image: stripe/stripe-cli:latest
+    command: listen --forward-to server:8080/api/v1/payments/webhook --skip-verify
+    environment:
+      STRIPE_API_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_DEVICE_NAME: drexa-dev
+    depends_on:
+      - server
+    restart: unless-stopped
+
 volumes:
   mysql_data:
   redis_data:

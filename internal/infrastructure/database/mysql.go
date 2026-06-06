@@ -6,7 +6,9 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
+	"drexa/internal/auth"
 	"drexa/internal/config"
+	"drexa/internal/payment"
 )
 
 func Connect(cfg config.DBConfig) (*gorm.DB, error) {
@@ -23,6 +25,17 @@ func Connect(cfg config.DBConfig) (*gorm.DB, error) {
 	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
 	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
 	sqlDB.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+
+	if err := db.AutoMigrate(
+		&auth.User{},
+		&auth.KycProfile{},
+		&auth.RefreshToken{},
+		&auth.PasswordResetToken{},
+		&payment.Wallet{},
+		&payment.Transaction{},
+	); err != nil {
+		return nil, fmt.Errorf("auto-migrate: %w", err)
+	}
 
 	return db, nil
 }

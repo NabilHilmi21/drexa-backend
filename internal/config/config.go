@@ -17,6 +17,12 @@ type Config struct {
 	Firebase FirebaseConfig
 	Twilio   TwilioConfig
 	SendGrid SendGridConfig
+	Stripe   StripeConfig
+}
+
+type StripeConfig struct {
+	SecretKey     string
+	WebhookSecret string
 }
 
 type TwilioConfig struct {
@@ -107,6 +113,10 @@ func Load() *Config {
 			FromEmail: getEnv("SENDGRID_FROM_EMAIL", ""),
 			FromName:  getEnv("SENDGRID_FROM_NAME", "Drexa"),
 			AppURL:    getEnv("APP_URL", "http://localhost:3000"),
+		},
+		Stripe: StripeConfig{
+			SecretKey:     getEnv("STRIPE_SECRET_KEY", ""),
+			WebhookSecret: getEnv("STRIPE_WEBHOOK_SECRET", ""),
 		},
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"drexa/internal/auth"
+	"drexa/internal/payment"
 )
 
 func addRoutes(
@@ -13,6 +14,7 @@ func addRoutes(
 	adminKycUc auth.AdminKycUsecase,
 	tokenSvc auth.TokenService,
 	fbVerifier auth.FirebaseVerifier,
+	paymentUc payment.PaymentUsecase,
 ) {
 	mux.Handle("/", http.NotFoundHandler())
 
@@ -34,4 +36,15 @@ func addRoutes(
 
 	// ── KYC — admin facing (JWT required) ────────────────────────────────────
 	_ = adminKycUc // TODO: implement admin KYC handlers
+
+	// ── Payments — public webhook (verified via Stripe signature) ────────────
+	mux.Handle("POST /api/v1/payments/webhook", payment.HandleStripeWebhook(paymentUc))
+
+	// ── Payments — protected (JWT required) ──────────────────────────────────
+	mux.Handle("POST /api/v1/payments/deposit/intent", jwt(payment.HandleCreateDepositIntent(paymentUc)))
+	mux.Handle("POST /api/v1/payments/withdraw", jwt(payment.HandleWithdraw(paymentUc)))
+
+	// ── Wallet — protected (JWT required) ────────────────────────────────────
+	mux.Handle("GET /api/v1/wallet/balance", jwt(payment.HandleGetBalance(paymentUc)))
+	mux.Handle("GET /api/v1/wallet/transactions", jwt(payment.HandleGetTransactions(paymentUc)))
 }

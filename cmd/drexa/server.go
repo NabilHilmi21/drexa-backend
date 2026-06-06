@@ -19,6 +19,9 @@ import (
 	authUc "drexa/internal/auth/usecase"
 	"drexa/internal/config"
 	firebaseInfra "drexa/internal/infrastructure/firebase"
+	paymentRepo "drexa/internal/payment/repository"
+	paymentSvc "drexa/internal/payment/service"
+	paymentUc "drexa/internal/payment/usecase"
 )
 
 type Server struct {
@@ -56,12 +59,18 @@ func NewServer(cfg *config.Config, db *gorm.DB, rdb *redis.Client, fb *firebaseI
 		log.Println("firebase: credentials not set — running with null verifier (dev only, all ID tokens accepted)")
 	}
 
+	// Payment
+	walletRepo := paymentRepo.NewWalletRepository(db)
+	txRepo := paymentRepo.NewTransactionRepository(db)
+	stripeSvc := paymentSvc.NewStripeService(cfg.Stripe.SecretKey, cfg.Stripe.WebhookSecret)
+	paymentUsecase := paymentUc.NewPaymentUsecase(walletRepo, txRepo, stripeSvc)
+
 	// Usecases
 	authUsecase := authUc.NewAuthUsecase(userRepo, refreshTokenRepo, otpService, tokenService)
 	kycUsecase := authUc.NewKycUsecase(userRepo, kycRepo)
 	adminKycUsecase := authUc.NewAdminKycUsecase(kycRepo, notifService, userRepo)
 
-	addRoutes(mux, authUsecase, kycUsecase, adminKycUsecase, tokenService, fbVerifier)
+	addRoutes(mux, authUsecase, kycUsecase, adminKycUsecase, tokenService, fbVerifier, paymentUsecase)
 
 	return &Server{
 		httpServer: &http.Server{
