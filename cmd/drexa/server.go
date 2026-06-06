@@ -19,6 +19,9 @@ import (
 	authUc "drexa/internal/auth/usecase"
 	"drexa/internal/config"
 	firebaseInfra "drexa/internal/infrastructure/firebase"
+	walletRepo "drexa/internal/wallet/repository"
+	walletSvc "drexa/internal/wallet/service"
+	walletUc "drexa/internal/wallet/usecase"
 )
 
 type Server struct {
@@ -28,16 +31,22 @@ type Server struct {
 func NewServer(cfg *config.Config, db *gorm.DB, rdb *redis.Client, fb *firebaseInfra.Client) *Server {
 	mux := http.NewServeMux()
 
-	// Repositories
+	// ── Auth Repositories ────────────────────────────────────────────────────
 	userRepo := authRepo.NewUserRepository(db)
 	refreshTokenRepo := authRepo.NewRefreshTokenRepository(db)
 	kycRepo := authRepo.NewKycProfileRepository(db)
 
-	// Third-party senders
+	// ── Wallet Repositories ──────────────────────────────────────────────────
+	walletRepository := walletRepo.NewWalletRepository(db)
+	txRepository := walletRepo.NewTransactionRepository(db)
+	depositRepository := walletRepo.NewDepositRepository(db)
+	withdrawalRepository := walletRepo.NewWithdrawalRepository(db)
+
+	// ── Third-party senders ──────────────────────────────────────────────────
 	sgEmailSender := authSvc.NewSendGridEmailSender(cfg.SendGrid.APIKey, cfg.SendGrid.FromEmail, cfg.SendGrid.FromName)
 	twilioSMSSender := authSvc.NewTwilioSMSSender(cfg.Twilio.AccountSID, cfg.Twilio.AuthToken, cfg.Twilio.FromPhone)
 
-	// Services
+	// ── Auth Services ────────────────────────────────────────────────────────
 	otpService := authSvc.NewRedisOTPService(rdb, sgEmailSender, twilioSMSSender)
 	notifService := authSvc.NewSendGridNotificationService(sgEmailSender, cfg.SendGrid.AppURL)
 	tokenService := authSvc.NewTokenService(
@@ -47,7 +56,11 @@ func NewServer(cfg *config.Config, db *gorm.DB, rdb *redis.Client, fb *firebaseI
 		7*24*time.Hour,
 	)
 
-	// Firebase verifier — degrades gracefully if Firebase is not configured
+	// ── Payment Service ──────────────────────────────────────────────────────
+	// TODO: replace NullPaymentService with StripePaymentService in production
+	paymentService := walletSvc.NewNullPaymentService()
+
+	// ── Firebase verifier ────────────────────────────────────────────────────
 	var fbVerifier auth.FirebaseVerifier = authSvc.NewNullFirebaseVerifier()
 	if fb != nil {
 		fbVerifier = authSvc.NewFirebaseAuthService(fb.Auth)
@@ -56,12 +69,27 @@ func NewServer(cfg *config.Config, db *gorm.DB, rdb *redis.Client, fb *firebaseI
 		log.Println("firebase: credentials not set — running with null verifier (dev only, all ID tokens accepted)")
 	}
 
-	// Usecases
+	// ── Auth Usecases ────────────────────────────────────────────────────────
 	authUsecase := authUc.NewAuthUsecase(userRepo, refreshTokenRepo, otpService, tokenService)
 	kycUsecase := authUc.NewKycUsecase(userRepo, kycRepo)
 	adminKycUsecase := authUc.NewAdminKycUsecase(kycRepo, notifService, userRepo)
 
-	addRoutes(mux, authUsecase, kycUsecase, adminKycUsecase, tokenService, fbVerifier, cfg.App.Env == "production")
+	// ── Wallet Usecases ──────────────────────────────────────────────────────
+	walletUsecase := walletUc.NewWalletUsecase(
+		walletRepository,
+		txRepository,
+		depositRepository,
+		withdrawalRepository,
+		paymentService,
+	)
+	adminWalletUsecase := walletUc.NewAdminWalletUsecase(
+		walletRepository,
+		txRepository,
+		withdrawalRepository,
+		paymentService,
+	)
+
+	addRoutes(mux, authUsecase, kycUsecase, adminKycUsecase, tokenService, fbVerifier, walletUsecase, adminWalletUsecase, cfg.App.Env == "production")
 
 	return &Server{
 		httpServer: &http.Server{
