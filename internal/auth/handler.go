@@ -2,19 +2,14 @@ package auth
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
-// DTO
+// ─── DTOs ────────────────────────────────────────────────────────────────────
 
-type RegisterRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
-type LoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+type FirebaseSignInRequest struct {
+	IDToken string `json:"id_token"`
 }
 
 type VerifyRequest struct {
@@ -22,36 +17,18 @@ type VerifyRequest struct {
 	OTP    string `json:"otp"`
 }
 
-type OAuthRequest struct {
-	Provider    string `json:"provider"`
-	ProviderUID string `json:"provider_uid"`
-	Email       string `json:"email,omitempty"`
-}
-
-type ResetPasswordRequest struct {
-	Token       string `json:"token"`
-	NewPassword string `json:"new_password"`
-}
-
-type ChangePasswordRequest struct {
-	UserID      string `json:"user_id"`
-	OldPassword string `json:"old_password"`
-	NewPassword string `json:"new_password"`
-}
-
-type TradingPinRequest struct {
-	UserID string `json:"user_id"`
-	Pin    string `json:"pin"`
+type SetPinRequest struct {
+	Pin string `json:"pin"`
 }
 
 type MessageResponse struct {
-	Message string `json:"message"`
+	Message string `json:"message,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
-// HELPER
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-func sendJSON(w http.ResponseWriter, status int, payload interface{}) {
+func sendJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(payload)
@@ -64,6 +41,7 @@ func setAuthCookies(w http.ResponseWriter, access, refresh string) {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   900,
 	})
 	http.SetCookie(w, &http.Cookie{
@@ -72,230 +50,151 @@ func setAuthCookies(w http.ResponseWriter, access, refresh string) {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   604800,
 	})
 }
 
-// HANDLERS
+// ─── Public Auth Handlers ─────────────────────────────────────────────────────
 
-// 1. REGISTER
-func HandleRegister(u AuthUsecase) http.HandlerFunc {
+// HandleFirebaseSignIn is the single sign-in endpoint.
+// It accepts a Firebase ID token, verifies it, and issues backend JWT cookies.
+// On first call for a given UID the user record is created automatically.
+func HandleFirebaseSignIn(u AuthUsecase, fb FirebaseVerifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req RegisterRequest
+		var req FirebaseSignInRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			sendJSON(w, 400, MessageResponse{Error: "invalid input"})
+			sendJSON(w, http.StatusBadRequest, MessageResponse{Error: "invalid input"})
 			return
 		}
 
-		_, err := u.Register(r.Context(), req.Email, req.Password)
+		claims, err := fb.VerifyIDToken(r.Context(), req.IDToken)
 		if err != nil {
-			sendJSON(w, 409, MessageResponse{Error: err.Error()})
+			sendJSON(w, http.StatusUnauthorized, MessageResponse{Error: "invalid firebase token"})
 			return
 		}
 
-		sendJSON(w, 200, MessageResponse{Message: "OTP sent"})
-	}
-}
-
-// 2. LOGIN
-func HandleLogin(u AuthUsecase) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req LoginRequest
-		json.NewDecoder(r.Body).Decode(&req)
-
-		token, err := u.Login(r.Context(), req.Email, req.Password)
+		token, err := u.SignInWithFirebase(r.Context(), claims)
 		if err != nil {
-			sendJSON(w, 401, MessageResponse{Error: "invalid credentials"})
+			sendJSON(w, http.StatusInternalServerError, MessageResponse{Error: "sign-in failed"})
 			return
 		}
 
 		setAuthCookies(w, token.AccessToken, token.RefreshToken)
-		sendJSON(w, 200, MessageResponse{Message: "login success"})
+		sendJSON(w, http.StatusOK, MessageResponse{Message: "sign-in successful"})
 	}
 }
 
-// 3. LOGOUT
 func HandleLogout(u AuthUsecase) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie("refresh_token")
-		if err == nil {
-			_ = u.Logout(r.Context(), c.Value)
+		if c, err := r.Cookie("refresh_token"); err == nil {
+			if logErr := u.Logout(r.Context(), c.Value); logErr != nil {
+				log.Printf("logout: failed to revoke refresh token: %v", logErr)
+			}
 		}
-		sendJSON(w, 200, MessageResponse{Message: "logout success"})
+		sendJSON(w, http.StatusOK, MessageResponse{Message: "logged out"})
 	}
 }
 
-// 4. REFRESH
 func HandleRefreshToken(u AuthUsecase) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie("refresh_token")
 		if err != nil {
-			sendJSON(w, 401, MessageResponse{Error: "expired"})
+			sendJSON(w, http.StatusUnauthorized, MessageResponse{Error: "missing refresh token"})
 			return
 		}
 
 		token, err := u.RefreshToken(r.Context(), c.Value)
 		if err != nil {
-			sendJSON(w, 401, MessageResponse{Error: "invalid token"})
+			sendJSON(w, http.StatusUnauthorized, MessageResponse{Error: "invalid or expired token"})
 			return
 		}
 
 		setAuthCookies(w, token.AccessToken, token.RefreshToken)
-		sendJSON(w, 200, MessageResponse{Message: "refreshed"})
+		sendJSON(w, http.StatusOK, MessageResponse{Message: "token refreshed"})
 	}
 }
 
-// 5. VERIFY EMAIL
-func HandleVerifyEmail(u AuthUsecase) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req VerifyRequest
-		json.NewDecoder(r.Body).Decode(&req)
-
-		ok, err := u.VerifyEmail(r.Context(), req.UserID, req.OTP)
-		if err != nil || !ok {
-			sendJSON(w, 401, MessageResponse{Error: "invalid otp"})
-			return
-		}
-
-		sendJSON(w, 200, MessageResponse{Message: "email verified"})
-	}
-}
-
-// 6. VERIFY PHONE
 func HandleVerifyPhone(u AuthUsecase) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req VerifyRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			sendJSON(w, http.StatusBadRequest, MessageResponse{Error: "invalid input"})
+			return
+		}
 
 		ok, err := u.VerifyPhone(r.Context(), req.UserID, req.OTP)
 		if err != nil || !ok {
-			sendJSON(w, 401, MessageResponse{Error: "invalid otp"})
+			sendJSON(w, http.StatusUnauthorized, MessageResponse{Error: "invalid or expired OTP"})
 			return
 		}
 
-		sendJSON(w, 200, MessageResponse{Message: "phone verified"})
+		sendJSON(w, http.StatusOK, MessageResponse{Message: "phone verified"})
 	}
 }
 
-// 7. REQUEST RESET
-func HandleRequestPasswordReset(u AuthUsecase) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req struct{ Email string }
-		json.NewDecoder(r.Body).Decode(&req)
+// ─── Protected Auth Handlers (require JWTMiddleware) ─────────────────────────
 
-		_ = u.RequestPasswordReset(r.Context(), req.Email)
-		sendJSON(w, 200, MessageResponse{Message: "email sent"})
-	}
-}
-
-// 8. RESET PASSWORD
-func HandleResetPassword(u AuthUsecase) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req ResetPasswordRequest
-		json.NewDecoder(r.Body).Decode(&req)
-
-		err := u.ResetPassword(r.Context(), req.Token, req.NewPassword)
-		if err != nil {
-			sendJSON(w, 400, MessageResponse{Error: err.Error()})
-			return
-		}
-
-		sendJSON(w, 200, MessageResponse{Message: "password updated"})
-	}
-}
-
-// 9. OAUTH REGISTER
-func HandleRegisterWithOAuth(u AuthUsecase) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req OAuthRequest
-		json.NewDecoder(r.Body).Decode(&req)
-
-		_, err := u.RegisterWithOAuth(r.Context(), req.Provider, req.ProviderUID, req.Email)
-		if err != nil {
-			sendJSON(w, 409, MessageResponse{Error: err.Error()})
-			return
-		}
-
-		sendJSON(w, 201, MessageResponse{Message: "oauth register success"})
-	}
-}
-
-// 10. OAUTH LOGIN
-func HandleLoginWithOAuth(u AuthUsecase) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req OAuthRequest
-		json.NewDecoder(r.Body).Decode(&req)
-
-		token, err := u.LoginWithOAuth(r.Context(), req.Provider, req.ProviderUID)
-		if err != nil {
-			sendJSON(w, 401, MessageResponse{Error: "oauth failed"})
-			return
-		}
-
-		setAuthCookies(w, token.AccessToken, token.RefreshToken)
-		sendJSON(w, 200, MessageResponse{Message: "oauth login success"})
-	}
-}
-
-// 11. CHANGE PASSWORD
-func HandleChangePassword(u AuthUsecase) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req ChangePasswordRequest
-		json.NewDecoder(r.Body).Decode(&req)
-
-		err := u.ChangePassword(r.Context(), req.UserID, req.OldPassword, req.NewPassword)
-		if err != nil {
-			sendJSON(w, 400, MessageResponse{Error: err.Error()})
-			return
-		}
-
-		sendJSON(w, 200, MessageResponse{Message: "password changed"})
-	}
-}
-
-// 12. LOGOUT ALL
 func HandleLogoutAll(u AuthUsecase) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID := r.Header.Get("X-User-ID")
-
-		err := u.LogoutAll(r.Context(), userID)
-		if err != nil {
-			sendJSON(w, 500, MessageResponse{Error: err.Error()})
+		claims, ok := UserFromContext(r.Context())
+		if !ok {
+			sendJSON(w, http.StatusUnauthorized, MessageResponse{Error: "unauthorized"})
 			return
 		}
 
-		sendJSON(w, 200, MessageResponse{Message: "all sessions revoked"})
+		if err := u.LogoutAll(r.Context(), claims.UserID); err != nil {
+			sendJSON(w, http.StatusInternalServerError, MessageResponse{Error: err.Error()})
+			return
+		}
+
+		sendJSON(w, http.StatusOK, MessageResponse{Message: "all sessions revoked"})
 	}
 }
 
-// 13. SET PIN
 func HandleSetTradingPin(u AuthUsecase) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req TradingPinRequest
-		json.NewDecoder(r.Body).Decode(&req)
-
-		err := u.SetTradingPin(r.Context(), req.UserID, req.Pin)
-		if err != nil {
-			sendJSON(w, 400, MessageResponse{Error: err.Error()})
+		claims, ok := UserFromContext(r.Context())
+		if !ok {
+			sendJSON(w, http.StatusUnauthorized, MessageResponse{Error: "unauthorized"})
 			return
 		}
 
-		sendJSON(w, 200, MessageResponse{Message: "pin set"})
+		var req SetPinRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			sendJSON(w, http.StatusBadRequest, MessageResponse{Error: "invalid input"})
+			return
+		}
+
+		if err := u.SetTradingPin(r.Context(), claims.UserID, req.Pin); err != nil {
+			sendJSON(w, http.StatusBadRequest, MessageResponse{Error: err.Error()})
+			return
+		}
+
+		sendJSON(w, http.StatusOK, MessageResponse{Message: "trading pin set"})
 	}
 }
 
-// 14. VERIFY PIN
 func HandleVerifyTradingPin(u AuthUsecase) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req TradingPinRequest
-		json.NewDecoder(r.Body).Decode(&req)
-
-		ok, err := u.VerifyTradingPin(r.Context(), req.UserID, req.Pin)
-		if err != nil || !ok {
-			sendJSON(w, 401, MessageResponse{Error: "invalid pin"})
+		claims, ok := UserFromContext(r.Context())
+		if !ok {
+			sendJSON(w, http.StatusUnauthorized, MessageResponse{Error: "unauthorized"})
 			return
 		}
 
-		sendJSON(w, 200, MessageResponse{Message: "pin verified"})
+		var req SetPinRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			sendJSON(w, http.StatusBadRequest, MessageResponse{Error: "invalid input"})
+			return
+		}
+
+		ok2, err := u.VerifyTradingPin(r.Context(), claims.UserID, req.Pin)
+		if err != nil || !ok2 {
+			sendJSON(w, http.StatusUnauthorized, MessageResponse{Error: "invalid pin"})
+			return
+		}
+
+		sendJSON(w, http.StatusOK, MessageResponse{Message: "pin verified"})
 	}
 }

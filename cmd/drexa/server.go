@@ -1,4 +1,3 @@
-// cmd/drexa/server.go
 package main
 
 import (
@@ -11,74 +10,63 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+
 	"drexa/internal/auth"
 	authRepo "drexa/internal/auth/repository"
 	authSvc "drexa/internal/auth/service"
 	authUc "drexa/internal/auth/usecase"
 	"drexa/internal/config"
-
-	"github.com/google/uuid"
-	"gorm.io/gorm"
+	firebaseInfra "drexa/internal/infrastructure/firebase"
 )
 
 type Server struct {
 	httpServer *http.Server
 }
 
-var (
-	mockSecretKey = uuid.NewString()
-)
-
-func NewServer(cfg *config.Config, db *gorm.DB) *Server {
+func NewServer(cfg *config.Config, db *gorm.DB, rdb *redis.Client, fb *firebaseInfra.Client) *Server {
 	mux := http.NewServeMux()
 
 	// Repositories
 	userRepo := authRepo.NewUserRepository(db)
-	authProviderRepo := authRepo.NewAuthProviderRepository(db)
 	refreshTokenRepo := authRepo.NewRefreshTokenRepository(db)
-	resetTokenRepo := authRepo.NewPasswordResetTokenRepository(db)
-	// kycRepo := authRepo.NewKycProfileRepository(db)
+	kycRepo := authRepo.NewKycProfileRepository(db)
 
-	// // // Services
-	otpService := authSvc.NewMockOTPService()
-	notificationService := authSvc.NewMockNotificationService()
-	tokenService := authSvc.NewTokenService([]byte(mockSecretKey), "drexa.api", time.Minute*15, time.Hour*24*7)
+	// Third-party senders
+	sgEmailSender := authSvc.NewSendGridEmailSender(cfg.SendGrid.APIKey, cfg.SendGrid.FromEmail, cfg.SendGrid.FromName)
+	twilioSMSSender := authSvc.NewTwilioSMSSender(cfg.Twilio.AccountSID, cfg.Twilio.AuthToken, cfg.Twilio.FromPhone)
 
-	// Usecases
-	var authProviderUsecase auth.AuthProviderUsecase
-	var kycUsecase auth.KycUsecase
-	var adminKycUsecase auth.AdminKycUsecase
-
-	authUsecase := authUc.NewAuthUsecase(userRepo, authProviderRepo, refreshTokenRepo, resetTokenRepo, otpService, notificationService, tokenService)
-	// authProviderUsecase := authUc.NewAuthProviderUsecase(authProviderRepo, userRepo)
-	// kycUsecase := authUc.NewKycUsecase(kycRepo, notificationService)
-	// adminKycUsecase := authUc.NewAdminKycUsecase(kycRepo, notificationService)
-
-	// Group by feature
-	// authHandlers = auth.AuthHandlers{
-	// 	Auth:         authUsecase,
-	// 	AuthProvider: authProviderUsecase,
-	// 	Kyc:          kycUsecase,
-	// 	AdminKyc:     adminKycUsecase,
-	// }
-
-	addRoutes(
-		mux,
-		authUsecase,
-		authProviderUsecase,
-		kycUsecase,
-		adminKycUsecase,
+	// Services
+	otpService := authSvc.NewRedisOTPService(rdb, sgEmailSender, twilioSMSSender)
+	notifService := authSvc.NewSendGridNotificationService(sgEmailSender, cfg.SendGrid.AppURL)
+	tokenService := authSvc.NewTokenService(
+		[]byte(cfg.JWT.Secret),
+		"drexa.api",
+		cfg.JWT.Expiration,
+		7*24*time.Hour,
 	)
 
-	var handler http.Handler = mux
-	// handler = middleware.Logging(handler)
-	// handler = middleware.CORS(handler)
-	// handler = middleware.Auth(handler)
+	// Firebase verifier — degrades gracefully if Firebase is not configured
+	var fbVerifier auth.FirebaseVerifier = authSvc.NewNullFirebaseVerifier()
+	if fb != nil {
+		fbVerifier = authSvc.NewFirebaseAuthService(fb.Auth)
+		log.Println("firebase: auth client initialized")
+	} else {
+		log.Println("firebase: credentials not set — running with null verifier (dev only, all ID tokens accepted)")
+	}
+
+	// Usecases
+	authUsecase := authUc.NewAuthUsecase(userRepo, refreshTokenRepo, otpService, tokenService)
+	kycUsecase := authUc.NewKycUsecase(userRepo, kycRepo)
+	adminKycUsecase := authUc.NewAdminKycUsecase(kycRepo, notifService, userRepo)
+
+	addRoutes(mux, authUsecase, kycUsecase, adminKycUsecase, tokenService, fbVerifier)
 
 	return &Server{
 		httpServer: &http.Server{
 			Addr:         cfg.App.Port,
-			Handler:      handler,
+			Handler:      mux,
 			ReadTimeout:  cfg.App.ReadTimeout,
 			WriteTimeout: cfg.App.WriteTimeout,
 			IdleTimeout:  cfg.App.IdleTimeout,
@@ -86,7 +74,7 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 	}
 }
 
-func (s *Server) Start(ctx context.Context, w io.Writer, args []string) error {
+func (s *Server) Start(ctx context.Context, w io.Writer, _ []string) error {
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
 	defer cancel()
 

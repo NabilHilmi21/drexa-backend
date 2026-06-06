@@ -2,49 +2,62 @@ package usecase
 
 import (
 	"context"
-	"drexa/internal/auth"
 	"errors"
 	"time"
+
+	"github.com/google/uuid"
+
+	"drexa/internal/auth"
 )
 
-type KycUseCase struct {
-	userRepo         auth.UserRepository
-	authProviderRepo auth.AuthProviderRepository
-	kycRepo          auth.KycProfileRepository
+type kycUsecase struct {
+	userRepo auth.UserRepository
+	kycRepo  auth.KycProfileRepository
 }
 
-func (uc KycUseCase) Submit(ctx context.Context, userID string, kyc *auth.KycProfile) error {
-	user, err := uc.userRepo.FindByID(ctx, userID)
-	if err != nil {
+func NewKycUsecase(userRepo auth.UserRepository, kycRepo auth.KycProfileRepository) auth.KycUsecase {
+	return &kycUsecase{userRepo: userRepo, kycRepo: kycRepo}
+}
+
+func (uc *kycUsecase) Submit(ctx context.Context, userID string, kyc *auth.KycProfile) error {
+	if _, err := uc.userRepo.FindByID(ctx, userID); err != nil {
 		return auth.ErrUserNotFound
 	}
 
-	if uc.kycRepo.Create(ctx, kyc) != nil {
-		return errors.New("failed storing kyc")
+	kyc.KycID = uuid.NewString()
+	kyc.UserID = userID
+	kyc.Status = auth.KycStatusPending
+	kyc.SubmittedAt = time.Now()
+
+	if err := uc.kycRepo.Create(ctx, kyc); err != nil {
+		return errors.New("failed to submit KYC")
 	}
-	user.KycProfile = *kyc
 	return nil
 }
 
-func (uc KycUseCase) GetByUserID(ctx context.Context, userID string) (*auth.KycProfile, error) {
+func (uc *kycUsecase) GetByUserID(ctx context.Context, userID string) (*auth.KycProfile, error) {
 	kyc, err := uc.kycRepo.FindByUserID(ctx, userID)
 	if err != nil {
-		return nil, errors.New("kyc cant found")
+		return nil, auth.ErrKycNotFound
 	}
-
 	return kyc, nil
-} // user checks their own status
+}
 
-func (uc KycUseCase) IsVerified(ctx context.Context, userID string) (bool, error)
-func (uc KycUseCase) IsExpired(ctx context.Context, userID string) (bool, error) {
-	user, err := uc.userRepo.FindByID(ctx, userID)
+func (uc *kycUsecase) IsVerified(ctx context.Context, userID string) (bool, error) {
+	kyc, err := uc.kycRepo.FindByUserID(ctx, userID)
 	if err != nil {
-		return false, auth.ErrUserNotFound
+		return false, auth.ErrKycNotFound
 	}
+	return kyc.Status == auth.KycStatusApproved, nil
+}
 
-	if user.KycProfile.ExpiresAt.After(time.Now()) {
-		return false, errors.New("kyc expired")
+func (uc *kycUsecase) IsExpired(ctx context.Context, userID string) (bool, error) {
+	kyc, err := uc.kycRepo.FindByUserID(ctx, userID)
+	if err != nil {
+		return false, auth.ErrKycNotFound
 	}
-
-	return true, nil
+	if kyc.ExpiresAt == nil {
+		return false, nil
+	}
+	return time.Now().After(*kyc.ExpiresAt), nil
 }

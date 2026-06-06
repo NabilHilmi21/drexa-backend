@@ -23,9 +23,6 @@ func NewUserRepository(db *gorm.DB) auth.UserRepository {
 func (r *userRepository) Create(ctx context.Context, user *auth.User) error {
 	result := r.db.WithContext(ctx).Create(user)
 	if result.Error != nil {
-		if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
-			return auth.ErrEmailAlreadyExists
-		}
 		return result.Error
 	}
 	return nil
@@ -67,6 +64,20 @@ func (r *userRepository) FindByID(ctx context.Context, userID string) (*auth.Use
 	return &user, nil
 }
 
+func (r *userRepository) FindByFirebaseUID(ctx context.Context, firebaseUID string) (*auth.User, error) {
+	var user auth.User
+	result := r.db.WithContext(ctx).
+		Where("firebase_uid = ?", firebaseUID).
+		First(&user)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, auth.ErrUserNotFound
+		}
+		return nil, result.Error
+	}
+	return &user, nil
+}
+
 func (r *userRepository) FindByEmail(ctx context.Context, email string) (*auth.User, error) {
 	var user auth.User
 	result := r.db.WithContext(ctx).
@@ -79,19 +90,6 @@ func (r *userRepository) FindByEmail(ctx context.Context, email string) (*auth.U
 		return nil, result.Error
 	}
 	return &user, nil
-}
-
-func (r *userRepository) ExistsByEmail(ctx context.Context, email string) (bool, error) {
-	// SELECT 1 is cheaper than fetching the full row — used on the registration hot path
-	var count int64
-	result := r.db.WithContext(ctx).
-		Model(&auth.User{}).
-		Where("email = ?", email).
-		Count(&count)
-	if result.Error != nil {
-		return false, result.Error
-	}
-	return count > 0, nil
 }
 
 // ─── Targeted Updates ────────────────────────────────────────────────────────
@@ -131,20 +129,6 @@ func (r *userRepository) UpdateLastLoginAt(ctx context.Context, userID string) e
 		Model(&auth.User{}).
 		Where("user_id = ?", userID).
 		Update("last_login_at", time.Now())
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return auth.ErrUserNotFound
-	}
-	return nil
-}
-
-func (r *userRepository) UpdatePasswordHash(ctx context.Context, userID, passwordHash string) error {
-	result := r.db.WithContext(ctx).
-		Model(&auth.User{}).
-		Where("user_id = ?", userID).
-		Update("password_hash", passwordHash)
 	if result.Error != nil {
 		return result.Error
 	}

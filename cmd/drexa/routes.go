@@ -1,47 +1,37 @@
 package main
 
 import (
-	"drexa/internal/auth"
 	"net/http"
+
+	"drexa/internal/auth"
 )
 
 func addRoutes(
 	mux *http.ServeMux,
 	authUc auth.AuthUsecase,
-	authProviderUC auth.AuthProviderUsecase,
 	kycUc auth.KycUsecase,
 	adminKycUc auth.AdminKycUsecase,
+	tokenSvc auth.TokenService,
+	fbVerifier auth.FirebaseVerifier,
 ) {
 	mux.Handle("/", http.NotFoundHandler())
 
-	// TODO : IMPLEMENT ALL
+	jwt := auth.JWTMiddleware(tokenSvc)
 
-	// Auth
-	mux.Handle("POST /api/v1/auth/register", auth.HandleRegister(authUc))
-	mux.Handle("POST /api/v1/auth/login", auth.HandleLogin(authUc))
+	// ── Public auth ──────────────────────────────────────────────────────────
+	mux.Handle("POST /api/v1/auth/signin", auth.HandleFirebaseSignIn(authUc, fbVerifier))
 	mux.Handle("POST /api/v1/auth/logout", auth.HandleLogout(authUc))
 	mux.Handle("POST /api/v1/auth/refresh", auth.HandleRefreshToken(authUc))
-	mux.Handle("POST /api/v1/auth/verify/email", auth.HandleVerifyEmail(authUc))
-	mux.Handle("POST /api/v1/auth/verify/phone", auth.HandleVerifyPhone(authUc))
-	mux.Handle("POST /api/v1/auth/password/reset", auth.HandleRequestPasswordReset(authUc))
-	mux.Handle("POST /api/v1/auth/oauth/register", auth.HandleRegisterWithOAuth(authUc))
-	mux.Handle("POST /api/v1/auth/oauth/login", auth.HandleLoginWithOAuth(authUc))
 
-	mux.Handle("POST /api/v1/auth/pin/set", auth.HandleSetTradingPin(authUc))
-	mux.Handle("POST /api/v1/auth/pin/verify", auth.HandleVerifyTradingPin(authUc))
+	// ── Protected auth (JWT required) ────────────────────────────────────────
+	mux.Handle("POST /api/v1/auth/logout/all", jwt(auth.HandleLogoutAll(authUc)))
+	mux.Handle("POST /api/v1/auth/pin/set", jwt(auth.HandleSetTradingPin(authUc)))
+	mux.Handle("POST /api/v1/auth/pin/verify", jwt(auth.HandleVerifyTradingPin(authUc)))
+	mux.Handle("POST /api/v1/auth/verify/phone", jwt(auth.HandleVerifyPhone(authUc)))
 
-	// Auth providers
-	//mux.Handle("GET  /api/v1/auth/providers", auth.HandleGetAuthMethods(*authProviderUC))
-	//mux.Handle("POST /api/v1/auth/providers/link", auth.HandleLinkAuthProvider(*authProviderUC))
-	//mux.Handle("DELETE /api/v1/auth/providers/{id}", auth.HandleUnlinkAuthProvider(*authProviderUC))
-	// KYC — user facing
-	//mux.Handle("POST /api/v1/kyc/submit", auth.HandleKycSubmit(*kycUc))
-	//mux.Handle("GET  /api/v1/kyc/status", auth.HandleKycStatus(*kycUc))
+	// ── KYC — user facing (JWT required) ─────────────────────────────────────
+	_ = kycUc // TODO: implement KYC handlers
 
-	// KYC — admin facing
-	//mux.Handle("GET  /api/v1/admin/kyc", auth.HandleAdminKycList(*adminKycUc))
-	//mux.Handle("GET  /api/v1/admin/kyc/{id}", auth.HandleAdminKycGet(*adminKycUc))
-	//mux.Handle("POST /api/v1/admin/kyc/{id}/approve", auth.HandleAdminKycApprove(*adminKycUc))
-	//mux.Handle("POST /api/v1/admin/kyc/{id}/reject", auth.HandleAdminKycReject(*adminKycUc))
-
+	// ── KYC — admin facing (JWT required) ────────────────────────────────────
+	_ = adminKycUc // TODO: implement admin KYC handlers
 }

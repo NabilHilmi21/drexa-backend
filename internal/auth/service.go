@@ -45,6 +45,12 @@ type TokenService interface {
 	HashToken(token string) string
 }
 
+// FirebaseVerifier verifies Firebase ID tokens issued by the frontend Firebase SDK.
+// Implement via FirebaseAuthService in internal/auth/service once Firebase is configured.
+type FirebaseVerifier interface {
+	VerifyIDToken(ctx context.Context, idToken string) (*FirebaseClaims, error)
+}
+
 // NotificationService abstracts user-facing notifications beyond OTP.
 // Implement this for email/push once a provider is chosen — use MockNotificationService in the meantime.
 type NotificationService interface {

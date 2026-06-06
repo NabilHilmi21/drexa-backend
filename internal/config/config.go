@@ -10,9 +10,26 @@ import (
 )
 
 type Config struct {
-	App AppConfig
-	DB  DBConfig
-	JWT JWTConfig
+	App      AppConfig
+	DB       DBConfig
+	JWT      JWTConfig
+	Redis    RedisConfig
+	Firebase FirebaseConfig
+	Twilio   TwilioConfig
+	SendGrid SendGridConfig
+}
+
+type TwilioConfig struct {
+	AccountSID string
+	AuthToken  string
+	FromPhone  string
+}
+
+type SendGridConfig struct {
+	APIKey    string
+	FromEmail string
+	FromName  string
+	AppURL    string
 }
 
 type AppConfig struct {
@@ -33,6 +50,18 @@ type DBConfig struct {
 type JWTConfig struct {
 	Secret     string
 	Expiration time.Duration
+}
+
+type RedisConfig struct {
+	Addr     string
+	Password string
+	DB       int
+	TLS      bool
+}
+
+type FirebaseConfig struct {
+	CredentialsJSON string
+	ProjectID       string
 }
 
 func Load() *Config {
@@ -57,6 +86,27 @@ func Load() *Config {
 		JWT: JWTConfig{
 			Secret:     mustGetEnv("JWT_SECRET"),
 			Expiration: getEnvDuration("JWT_EXPIRATION", 24*time.Hour),
+		},
+		Redis: RedisConfig{
+			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
+			Password: getEnv("REDIS_PASSWORD", ""),
+			DB:       getEnvInt("REDIS_DB", 0),
+			TLS:      getEnvBool("REDIS_TLS", false),
+		},
+		Firebase: FirebaseConfig{
+			CredentialsJSON: getEnv("FIREBASE_CREDENTIALS_JSON", ""),
+			ProjectID:       getEnv("FIREBASE_PROJECT_ID", ""),
+		},
+		Twilio: TwilioConfig{
+			AccountSID: getEnv("TWILIO_ACCOUNT_SID", ""),
+			AuthToken:  getEnv("TWILIO_AUTH_TOKEN", ""),
+			FromPhone:  getEnv("TWILIO_FROM_PHONE", ""),
+		},
+		SendGrid: SendGridConfig{
+			APIKey:    getEnv("SENDGRID_API_KEY", ""),
+			FromEmail: getEnv("SENDGRID_FROM_EMAIL", ""),
+			FromName:  getEnv("SENDGRID_FROM_NAME", "Drexa"),
+			AppURL:    getEnv("APP_URL", "http://localhost:3000"),
 		},
 	}
 }
@@ -88,6 +138,18 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return i
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
 }
 
 func getEnvDuration(key string, fallback time.Duration) time.Duration {

@@ -4,39 +4,21 @@ import "context"
 
 // AuthUsecase handles user-facing authentication flows
 type AuthUsecase interface {
-	// Registration
-	Register(ctx context.Context, email, password string) (*User, error)
-	RegisterWithOAuth(ctx context.Context, provider, providerUID, email string) (*User, error)
+	// Sign in — creates user on first call, finds existing user on subsequent calls
+	SignInWithFirebase(ctx context.Context, claims *FirebaseClaims) (*AuthToken, error)
 
-	// Verification — Send triggers OTP dispatch, Verify checks the code
-	SendEmailVerificationOTP(ctx context.Context, userID string) error
+	// Phone verification — Firebase handles email; backend handles phone for trading compliance
 	SendPhoneVerificationOTP(ctx context.Context, userID string) error
-	VerifyEmail(ctx context.Context, userID, otp string) (bool, error)
 	VerifyPhone(ctx context.Context, userID, otp string) (bool, error)
 
-	// Auth
-	Login(ctx context.Context, email, password string) (*AuthToken, error)
-	LoginWithOAuth(ctx context.Context, provider, providerUID string) (*AuthToken, error)
+	// Session management
 	RefreshToken(ctx context.Context, refreshToken string) (*AuthToken, error)
-	Logout(ctx context.Context, tokenID string) error
-	LogoutAll(ctx context.Context, userID string) error // revokes all sessions across devices
+	Logout(ctx context.Context, refreshToken string) error
+	LogoutAll(ctx context.Context, userID string) error
 
-	// Password
-	ChangePassword(ctx context.Context, userID, oldPassword, newPassword string) error
-	RequestPasswordReset(ctx context.Context, email string) error // always returns nil — never confirm email existence
-	ResetPassword(ctx context.Context, token, newPassword string) error
-
-	// Trading PIN — separate from login auth, required before executing trades or withdrawals
+	// Trading PIN — required before executing trades or withdrawals
 	SetTradingPin(ctx context.Context, userID, pin string) error
 	VerifyTradingPin(ctx context.Context, userID, pin string) (bool, error)
-}
-
-// AuthProviderUsecase handles OAuth provider linking and unlinking
-type AuthProviderUsecase interface {
-	LinkAuthProvider(ctx context.Context, userID, provider, providerUID string) (*AuthProvider, error)
-	UnlinkAuthProvider(ctx context.Context, userID, authID string) error // should block if it's the only auth method
-	GetAuthMethods(ctx context.Context, userID string) ([]AuthProvider, error)
-	FindByProvider(ctx context.Context, provider, providerUID string) (*AuthProvider, error)
 }
 
 // KycUsecase handles user-facing KYC submission and status checks

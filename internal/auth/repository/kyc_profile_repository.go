@@ -36,14 +36,15 @@ func (r *kycProfileRepository) Update(ctx context.Context, kyc *auth.KycProfile)
 	return result.Error
 }
 
-func (r *kycProfileRepository) UpdateStatus(ctx context.Context, kycID string, status auth.KycStatus, reason string) error {
+func (r *kycProfileRepository) UpdateStatus(ctx context.Context, kycID string, status auth.KycStatus, reason, reviewedBy string) error {
 	// Use map[string]any to avoid GORM skipping zero/empty values on struct updates
 	result := r.db.WithContext(ctx).
 		Model(&auth.KycProfile{}).
 		Where("kyc_id = ?", kycID).
 		Updates(map[string]any{
 			"status":           status,
-			"rejection_reason": reason, // empty string is valid here when approving
+			"rejection_reason": reason,     // empty string is valid here when approving
+			"reviewed_by":      reviewedBy, // audit trail: who made the decision
 		})
 	if result.Error != nil {
 		return result.Error

@@ -2,358 +2,175 @@ package usecase
 
 import (
 	"context"
-	"drexa/internal/auth"
 	"errors"
 	"fmt"
+	"log"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+
+	"drexa/internal/auth"
 )
+
+var pinRegexp = regexp.MustCompile(`^\d{6}$`)
 
 type authUsecase struct {
 	userRepo         auth.UserRepository
-	authProviderRepo auth.AuthProviderRepository
 	refreshTokenRepo auth.RefreshTokenRepository
-	resetTokenRepo   auth.PasswordResetTokenRepository
 	otpService       auth.OTPService
-	notifService     auth.NotificationService
 	tokenService     auth.TokenService
 }
 
 func NewAuthUsecase(
 	userRepo auth.UserRepository,
-	authProviderRepo auth.AuthProviderRepository,
 	refreshTokenRepo auth.RefreshTokenRepository,
-	resetTokenRepo auth.PasswordResetTokenRepository,
 	otpService auth.OTPService,
-	notifService auth.NotificationService,
 	tokenService auth.TokenService,
 ) auth.AuthUsecase {
 	return &authUsecase{
 		userRepo:         userRepo,
-		authProviderRepo: authProviderRepo,
 		refreshTokenRepo: refreshTokenRepo,
-		resetTokenRepo:   resetTokenRepo,
 		otpService:       otpService,
-		notifService:     notifService,
 		tokenService:     tokenService,
 	}
 }
 
-// TODO : Implement all usecases
-// register
-func (uc authUsecase) Register(ctx context.Context, email, password string) (*auth.User, error) {
-	var user *auth.User
-
-	isExistEmail, err := uc.userRepo.ExistsByEmail(ctx, email)
+// SignInWithFirebase is the single entry point for all auth flows.
+// It finds the user by Firebase UID, creating them on first sign-in.
+func (uc *authUsecase) SignInWithFirebase(ctx context.Context, claims *auth.FirebaseClaims) (*auth.AuthToken, error) {
+	user, err := uc.userRepo.FindByFirebaseUID(ctx, claims.UID)
 	if err != nil {
-		return user, errors.New("error to get email")
+		if !errors.Is(err, auth.ErrUserNotFound) {
+			return nil, err
+		}
+		user = &auth.User{
+			UserID:          uuid.NewString(),
+			FirebaseUID:     claims.UID,
+			Email:           claims.Email,
+			IsEmailVerified: claims.EmailVerified,
+		}
+		if err := uc.userRepo.Create(ctx, user); err != nil {
+			return nil, errors.New("failed to create user")
+		}
+	} else if claims.EmailVerified && !user.IsEmailVerified {
+		_ = uc.userRepo.UpdateEmailVerified(ctx, user.UserID, true)
+		user.IsEmailVerified = true
 	}
 
-	if isExistEmail {
-		return user, auth.ErrEmailAlreadyExists
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
-	if err != nil {
-		return user, errors.New("hash failed")
-	}
-
-	user = &auth.User{
-		UserID:          uuid.NewString(),
-		Email:           email,
-		PasswordHash:    string(hash),
-		IsEmailVerified: false,
-		IsPhoneVerified: false,
-	}
-
-	// if uc.userRepo.Create(ctx, user) != nil {
-	// 	return nil, errors.New("failed to create user")
-	// }
-
-	// if uc.SendEmailVerificationOTP(ctx, user.UserID) != nil {
-	// 	return nil, errors.New("failed to send otp")
-	// }
-
-	return user, nil
+	return uc.issueTokenPair(ctx, user)
 }
 
-// register with oauth
-func (uc *authUsecase) RegisterWithOAuth(ctx context.Context, provider, providerUID, email string) (*auth.User, error) {
-	var prov *auth.AuthProvider
-	userid := uuid.NewString()
-	user := &auth.User{
-		UserID:     userid,
-		CreatedAt:  time.Now(),
-		ModifiedAt: time.Now(),
-	}
-
-	prov = &auth.AuthProvider{
-		AuthID:      uuid.NewString(),
-		UserID:      userid,
-		Provider:    provider,
-		ProviderUID: providerUID,
-		Email:       email,
-		CreatedAt:   time.Now(),
-	}
-
-	user.AuthMethods = append(user.AuthMethods, *prov)
-
-	return user, nil
-}
-
-// Verification
-// perlu perbaikan
-func (uc authUsecase) SendEmailVerificationOTP(ctx context.Context, userID string) error {
+func (uc *authUsecase) SendPhoneVerificationOTP(ctx context.Context, userID string) error {
 	user, err := uc.userRepo.FindByID(ctx, userID)
 	if err != nil {
-		return err
+		return auth.ErrUserNotFound
 	}
-	if uc.otpService.GenerateAndSendEmail(ctx, fmt.Sprintf("otp:email:%s", user.Email), user.Email) != nil {
-		return err
-	}
-	return nil
+	return uc.otpService.GenerateAndSendSMS(ctx, fmt.Sprintf("otp:phone:%s", user.PhoneNumber), user.PhoneNumber)
 }
 
-// perlu perbaikan
-func (uc authUsecase) SendPhoneVerificationOTP(ctx context.Context, userID string) error {
+func (uc *authUsecase) VerifyPhone(ctx context.Context, userID, otp string) (bool, error) {
 	user, err := uc.userRepo.FindByID(ctx, userID)
 	if err != nil {
-		return err
+		return false, auth.ErrUserNotFound
 	}
-	if uc.otpService.GenerateAndSendSMS(ctx, fmt.Sprintf("otp:phone:%s", user.PhoneNumber), user.PhoneNumber) != nil {
-		return err
-	}
-	return nil
-}
-func (uc authUsecase) VerifyEmail(ctx context.Context, userID, otp string) (bool, error) {
-	ok, err := uc.otpService.Verify(ctx, userID, otp)
+
+	ok, err := uc.otpService.Verify(ctx, fmt.Sprintf("otp:phone:%s", user.PhoneNumber), otp)
 	if err != nil {
 		return false, err
 	}
-	return ok, nil
-}
-func (uc authUsecase) VerifyPhone(ctx context.Context, userID, otp string) (bool, error) {
-	ok, err := uc.otpService.Verify(ctx, userID, otp)
-	if err != nil {
-		return false, err
+	if !ok {
+		return false, nil
 	}
-	return ok, nil
+
+	return true, uc.userRepo.UpdatePhoneVerified(ctx, userID, true)
 }
 
-// Auth
-func (uc authUsecase) Login(ctx context.Context, email, password string) (*auth.AuthToken, error) {
-	user, err := uc.userRepo.FindByEmail(ctx, email)
-	if err != nil {
-		return nil, auth.ErrUserNotFound
-	}
-	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password))
-	if err != nil {
-		return nil, err
-	}
-
-	Acctoken, err := uc.tokenService.GenerateAccessToken(ctx, user)
-	if err != nil {
-		return nil, err
-	}
-
-	refToken, err := uc.tokenService.GenerateRefreshToken(ctx, user.UserID)
-	if err != nil {
-		return nil, err
-	}
-
-	token := &auth.AuthToken{
-		AccessToken:  Acctoken,
-		RefreshToken: refToken,
-		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Minute * 15),
-	}
-	return token, nil
-}
-func (uc authUsecase) LoginWithOAuth(ctx context.Context, provider, providerUID string) (*auth.AuthToken, error) {
-	prov, err := uc.authProviderRepo.FindByProvider(ctx, provider, providerUID)
-	if err != nil {
-		return nil, auth.ErrAuthProviderNotFound
-	}
-
-	user, err := uc.userRepo.FindByID(ctx, prov.UserID)
-	if err != nil {
-		return nil, auth.ErrUserNotFound
-	}
-
-	Acctoken, err := uc.tokenService.GenerateAccessToken(ctx, user)
-	if err != nil {
-		return nil, err
-	}
-
-	refToken, err := uc.tokenService.GenerateRefreshToken(ctx, user.UserID)
-	if err != nil {
-		return nil, err
-	}
-
-	token := &auth.AuthToken{
-		AccessToken:  Acctoken,
-		RefreshToken: refToken,
-		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Minute * 15),
-	}
-	return token, nil
-}
-
-func (uc authUsecase) RefreshToken(ctx context.Context, refreshToken string) (*auth.AuthToken, error) {
-	hash := uc.tokenService.HashToken(refreshToken)
-	refToken, err := uc.refreshTokenRepo.FindByTokenHash(ctx, hash)
+func (uc *authUsecase) RefreshToken(ctx context.Context, rawToken string) (*auth.AuthToken, error) {
+	hash := uc.tokenService.HashToken(rawToken)
+	stored, err := uc.refreshTokenRepo.FindByTokenHash(ctx, hash)
 	if err != nil {
 		return nil, auth.ErrTokenInvalid
 	}
 
-	user, err := uc.userRepo.FindByID(ctx, refToken.UserID)
+	if stored.RevokedAt != nil || time.Now().After(stored.ExpiresAt) {
+		return nil, auth.ErrTokenExpired
+	}
+
+	user, err := uc.userRepo.FindByID(ctx, stored.UserID)
 	if err != nil {
 		return nil, auth.ErrUserNotFound
 	}
 
+	_ = uc.refreshTokenRepo.Revoke(ctx, stored.TokenID)
+	return uc.issueTokenPair(ctx, user)
+}
+
+func (uc *authUsecase) Logout(ctx context.Context, rawToken string) error {
+	hash := uc.tokenService.HashToken(rawToken)
+	stored, err := uc.refreshTokenRepo.FindByTokenHash(ctx, hash)
+	if err != nil {
+		return nil
+	}
+	return uc.refreshTokenRepo.Revoke(ctx, stored.TokenID)
+}
+
+func (uc *authUsecase) LogoutAll(ctx context.Context, userID string) error {
+	return uc.refreshTokenRepo.RevokeAllByUserID(ctx, userID)
+}
+
+func (uc *authUsecase) SetTradingPin(ctx context.Context, userID, pin string) error {
+	if !pinRegexp.MatchString(pin) {
+		return errors.New("pin must be exactly 6 digits")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
+	if err != nil {
+		return errors.New("failed to hash pin")
+	}
+	return uc.userRepo.UpdateTradingPinHash(ctx, userID, string(hash))
+}
+
+func (uc *authUsecase) VerifyTradingPin(ctx context.Context, userID, pin string) (bool, error) {
+	user, err := uc.userRepo.FindByID(ctx, userID)
+	if err != nil {
+		return false, auth.ErrUserNotFound
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.TradingPinHash), []byte(pin)); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (uc *authUsecase) issueTokenPair(ctx context.Context, user *auth.User) (*auth.AuthToken, error) {
 	accToken, err := uc.tokenService.GenerateAccessToken(ctx, user)
 	if err != nil {
 		return nil, err
 	}
 
-	NewRefToken, err := uc.tokenService.GenerateRefreshToken(ctx, user.UserID)
+	rawRefToken, err := uc.tokenService.GenerateRefreshToken(ctx, user.UserID)
 	if err != nil {
 		return nil, err
 	}
-	newToken := &auth.AuthToken{
-		AccessToken:  accToken,
-		RefreshToken: NewRefToken,
-		TokenType:    "Bearer",
-		ExpiresAt:    time.Now().Add(time.Minute * 15),
-	}
 
-	return newToken, nil
-}
-func (uc authUsecase) Logout(ctx context.Context, tokenID string) error {
-	err := uc.refreshTokenRepo.Revoke(ctx, tokenID)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-func (uc authUsecase) LogoutAll(ctx context.Context, userID string) error {
-	err := uc.refreshTokenRepo.RevokeAllByUserID(ctx, userID)
-	if err != nil {
-		return err
-	}
-	return nil
-} // revokes all sessions across devices
-// RequestPasswordReset — uses userRepo + resetTokenRepo + tokenService + notifService
-
-// Password
-// MASIH PERLU PERBAIKAN
-func (uc authUsecase) ChangePassword(ctx context.Context, userID, oldPassword, newPassword string) error {
-	if oldPassword == newPassword {
-		return errors.New("new password must be different from old password")
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), 10)
-	if err != nil {
-		return errors.New("hash failed")
-	}
-
-	user, err := uc.userRepo.FindByID(ctx, userID)
-	if err != nil {
-		return auth.ErrUserNotFound
-	}
-
-	err = uc.userRepo.UpdatePasswordHash(ctx, userID, string(hash))
-	if err != nil {
-		return errors.New("password update failed")
-	}
-
-	err = uc.notifService.SendPasswordChanged(ctx, userID, user.Email)
-	if err != nil {
-		return errors.New("failed to send notification")
-	}
-	return nil
-}
-
-func (uc *authUsecase) RequestPasswordReset(ctx context.Context, email string) error {
-	// Always return nil regardless of outcome — never confirm whether the email
-	// exists in the system, prevents user enumeration attacks
-
-	user, err := uc.userRepo.FindByEmail(ctx, email)
-	if err != nil {
-		return nil // silently return even if user not found
-	}
-
-	// Clean up stale tokens before issuing a new one — prevents token table bloat
-	// and ensures only one valid reset token exists per user at a time
-	_ = uc.resetTokenRepo.DeleteExpiredByUserID(ctx, user.UserID)
-
-	// Generate a long random token — tokenService handles crypto/rand generation
-	// This is NOT an OTP — it's a full random token used in a reset link
-	rawToken, err := uc.tokenService.GenerateRefreshToken(ctx, user.UserID)
-	if err != nil {
-		return nil // still silent
-	}
-
-	// Persist the hash — never store raw tokens
-	resetToken := &auth.PasswordResetToken{
+	record := &auth.RefreshToken{
 		TokenID:   uuid.NewString(),
 		UserID:    user.UserID,
-		TokenHash: uc.tokenService.HashToken(rawToken),
-		ExpiresAt: time.Now().Add(1 * time.Hour), // short window — standard for password resets
+		TokenHash: uc.tokenService.HashToken(rawRefToken),
+		ExpiresAt: time.Now().Add(7 * 24 * time.Hour),
 	}
-	if err := uc.resetTokenRepo.Create(ctx, resetToken); err != nil {
-		return nil // still silent
+	if err := uc.refreshTokenRepo.Create(ctx, record); err != nil {
+		return nil, err
 	}
 
-	// Send the raw token to the user's email — notifService builds the full reset URL
-	_ = uc.notifService.SendPasswordReset(ctx, user.UserID, user.Email, rawToken)
+	if err := uc.userRepo.UpdateLastLoginAt(ctx, user.UserID); err != nil {
+		log.Printf("issueTokenPair: failed to update last_login_at for user %s: %v", user.UserID, err)
+	}
 
-	return nil
+	return &auth.AuthToken{
+		AccessToken:  accToken,
+		RefreshToken: rawRefToken,
+		TokenType:    "Bearer",
+		ExpiresAt:    time.Now().Add(15 * time.Minute),
+	}, nil
 }
-
-// ResetPassword — uses resetTokenRepo + userRepo + refreshTokenRepo + notifService
-func (uc *authUsecase) ResetPassword(ctx context.Context, rawToken, newPassword string) error {
-	// 1. Hash the incoming token to look it up — repo checks used_at and expires_at
-	tokenHash := uc.tokenService.HashToken(rawToken)
-
-	stored, err := uc.resetTokenRepo.FindByTokenHash(ctx, tokenHash)
-	if err != nil {
-		// Covers: not found, already used, or expired — all return the same error
-		// so attackers can't distinguish between cases
-		return auth.ErrTokenInvalid
-	}
-
-	// 2. Hash the new password
-	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-
-	// 3. Update password
-	if err := uc.userRepo.UpdatePasswordHash(ctx, stored.UserID, string(hash)); err != nil {
-		return err
-	}
-
-	// 4. Consume the reset token immediately — can't be reused even if the link is clicked again
-	if err := uc.resetTokenRepo.Revoke(ctx, stored.TokenID); err != nil {
-		return err
-	}
-
-	// 5. Revoke all active sessions — force re-login on all devices after password change
-	// If someone's account was compromised, this kicks out the attacker too
-	_ = uc.refreshTokenRepo.RevokeAllByUserID(ctx, stored.UserID)
-
-	// 6. Notify user — security alert so they know their password changed
-	user, err := uc.userRepo.FindByID(ctx, stored.UserID)
-	if err == nil {
-		_ = uc.notifService.SendPasswordChanged(ctx, user.UserID, user.Email)
-	}
-
-	return nil
-}
-
-// PIN
-func (uc *authUsecase) SetTradingPin(ctx context.Context, userID, pin string) error
-func (uc *authUsecase) VerifyTradingPin(ctx context.Context, userID, pin string) (bool, error)

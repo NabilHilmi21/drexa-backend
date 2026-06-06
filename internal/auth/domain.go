@@ -11,9 +11,9 @@ import (
 
 type User struct {
 	UserID          string         `gorm:"primaryKey;column:user_id"`
+	FirebaseUID     string         `gorm:"column:firebase_uid;uniqueIndex"`
 	UserName        string         `gorm:"column:username"`
 	Email           string         `gorm:"column:email;uniqueIndex"`
-	PasswordHash    string         `gorm:"column:password_hash"`
 	PhoneNumber     string         `gorm:"column:phone_number"`
 	TradingPinHash  string         `gorm:"column:trading_pin_hash"`
 	IsEmailVerified bool           `gorm:"column:is_email_verified;default:false"`
@@ -23,18 +23,7 @@ type User struct {
 	ModifiedAt      time.Time      `gorm:"column:modified_at;autoUpdateTime"`
 	DeletedAt       gorm.DeletedAt `gorm:"column:deleted_at;index"` // soft delete — required for OJK audit trail
 
-	// Associations — not columns, loaded separately via Preload()
-	KycProfile  KycProfile     `gorm:"foreignKey:UserID"`
-	AuthMethods []AuthProvider `gorm:"foreignKey:UserID"`
-}
-
-type AuthProvider struct {
-	AuthID      string    `gorm:"primaryKey;column:auth_id"`
-	UserID      string    `gorm:"column:user_id;index"` // FK to users
-	Provider    string    `gorm:"column:provider"`      // e.g. "google", "apple"
-	ProviderUID string    `gorm:"column:provider_uid"`  // provider's unique user ID
-	Email       string    `gorm:"column:email"`         // kept for auto-link logic on duplicate email
-	CreatedAt   time.Time `gorm:"column:created_at;autoCreateTime"`
+	KycProfile KycProfile `gorm:"foreignKey:UserID"`
 }
 
 // KycStatus is a defined type to prevent arbitrary string values
@@ -69,6 +58,7 @@ type KycProfile struct {
 	VerificationSource string     `gorm:"column:verification_source"`             // e.g. "verihubs", "vida"
 	DukcapilVerified   bool       `gorm:"column:dukcapil_verified;default:false"` // was NIK validated against Dukcapil?
 	RejectionReason    string     `gorm:"column:rejection_reason"`                // populated if status = rejected
+	ReviewedBy         string     `gorm:"column:reviewed_by"`                     // admin user ID who approved or rejected
 	SubmittedAt        time.Time  `gorm:"column:submitted_at"`
 	VerifiedAt         *time.Time `gorm:"column:verified_at"` // pointer — nil until approved
 	ExpiresAt          *time.Time `gorm:"column:expires_at"`  // KYC can expire and require re-verification
@@ -107,17 +97,20 @@ type PasswordResetToken struct {
 	CreatedAt time.Time  `gorm:"column:created_at;autoCreateTime"`
 }
 
+// FirebaseClaims holds the verified identity extracted from a Firebase ID token.
+type FirebaseClaims struct {
+	UID           string
+	Email         string
+	EmailVerified bool
+	Provider      string // e.g. "google.com", "apple.com", "password"
+}
+
 // ─── Domain Errors ───────────────────────────────────────────────────────────
 
 var (
 	// User
 	ErrUserNotFound       = errors.New("user not found")
 	ErrEmailAlreadyExists = errors.New("email already exists")
-	ErrInvalidCredentials = errors.New("invalid credentials")
-
-	// Auth provider
-	ErrAuthProviderNotFound      = errors.New("auth provider not found")
-	ErrAuthProviderAlreadyExists = errors.New("auth provider already linked")
 
 	// Token
 	ErrTokenInvalid = errors.New("token is invalid")
