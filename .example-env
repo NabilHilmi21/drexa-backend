@@ -7,13 +7,16 @@ APP_ENV=development
 
 
 # =========================
-# Database Configuration
+# MySQL Configuration
 # =========================
-# Example (go-sql-driver/mysql):
-# username:password@tcp(host:port)/database_name?parseTime=true
 
-# Example if localhost (DOUBLE CHECK):
-DB_DSN=root:@tcp(localhost:3306)/drexa?parseTime=true
+MYSQL_ROOT_PASSWORD=change_me_root
+MYSQL_DATABASE=drexa
+MYSQL_USER=drexa_user
+MYSQL_PASSWORD=change_me_password
+
+# "mysql" = Docker service name. Change to "localhost" for local dev without Docker.
+DB_DSN=drexa_user:change_me_password@tcp(mysql:3306)/drexa?parseTime=true
 
 DB_MAX_IDLE_CONNS=10
 DB_MAX_OPEN_CONNS=100
@@ -21,8 +24,49 @@ DB_CONN_MAX_LIFETIME=1h
 
 
 # =========================
+# Redis Configuration
+# =========================
+
+# "redis" = Docker service name. Change to "localhost" for local dev without Docker.
+REDIS_ADDR=redis:6379
+REDIS_PASSWORD=change_me_redis
+REDIS_DB=0
+
+
+# =========================
 # JWT Configuration
 # =========================
 
-JWT_SECRET=super-secret-jwt-key
+JWT_SECRET=replace_with_a_long_random_secret
 JWT_EXPIRATION=24h
+
+
+# =========================
+# Firebase Configuration
+# =========================
+
+# Base64-encoded Firebase service account JSON.
+# 1. Firebase Console → Project Settings → Service Accounts → Generate New Private Key
+# 2. Linux/Mac:  base64 -w 0 service-account.json
+#    Windows:    [Convert]::ToBase64String([IO.File]::ReadAllBytes("service-account.json"))
+FIREBASE_CREDENTIALS_JSON=
+FIREBASE_PROJECT_ID=your-firebase-project-id
+
+
+# =========================
+# Twilio Configuration
+# =========================
+
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+TWILIO_FROM_PHONE=+1234567890
+
+
+# =========================
+# SendGrid Configuration
+# =========================
+
+SENDGRID_API_KEY=SG.xxxxxxxxxxxxxxxxxxxxxxxx
+SENDGRID_FROM_EMAIL=noreply@yourdomain.com
+SENDGRID_FROM_NAME=Drexa
+APP_URL=http://localhost:3000
