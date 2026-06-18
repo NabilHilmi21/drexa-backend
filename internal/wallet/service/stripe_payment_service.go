@@ -95,3 +95,11 @@ func (s *StripePaymentService) CreatePaymentIntent(
 
 	return pi.ClientSecret, pi.ID, nil
 }
+
+func (s *StripePaymentService) VerifyPayment(ctx context.Context, providerRef string) (bool, error) {
+	pi, err := paymentintent.Get(providerRef, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to retrieve payment intent: %w", err)
+	}
+	return pi.Status == stripe.PaymentIntentStatusSucceeded, nil
+}

@@ -18,6 +18,7 @@ type walletUsecase struct {
 	depositRepo    wallet.DepositRepository
 	withdrawalRepo wallet.WithdrawalRepository
 	paymentSvc     wallet.PaymentService
+	disburseSvc    wallet.DisbursementService
 	cryptoProvider wallet.CryptoProvider
 	tx             wallet.TxManager
 }
@@ -28,6 +29,7 @@ func NewWalletUsecase(
 	depositRepo wallet.DepositRepository,
 	withdrawalRepo wallet.WithdrawalRepository,
 	paymentSvc wallet.PaymentService,
+	disburseSvc wallet.DisbursementService,
 	cryptoProvider wallet.CryptoProvider,
 	tx wallet.TxManager,
 ) wallet.WalletUsecase {
@@ -37,6 +39,7 @@ func NewWalletUsecase(
 		depositRepo:    depositRepo,
 		withdrawalRepo: withdrawalRepo,
 		paymentSvc:     paymentSvc,
+		disburseSvc:    disburseSvc,
 		cryptoProvider: cryptoProvider,
 		tx:             tx,
 	}
@@ -232,6 +235,29 @@ func (uc *walletUsecase) ConfirmDeposit(ctx context.Context, providerRef string)
 	})
 }
 
+// VerifyDeposit explicitly checks the status of a payment intent with the provider.
+// If it succeeded, it acts like a webhook and confirms the deposit.
+func (uc *walletUsecase) VerifyDeposit(ctx context.Context, providerRef string) error {
+	depositReq, err := uc.depositRepo.FindByProviderRef(ctx, providerRef)
+	if err != nil {
+		return err
+	}
+	if depositReq.Status != wallet.TxStatusPending {
+		return nil // already processed, safe to ignore
+	}
+
+	ok, err := uc.paymentSvc.VerifyPayment(ctx, providerRef)
+	if err != nil {
+		return err
+	}
+
+	if ok {
+		return uc.ConfirmDeposit(ctx, providerRef)
+	}
+
+	return nil // not yet succeeded, wait for webhook or later retry
+}
+
 // InitiateWithdrawal deducts balance, locks it, and queues a withdrawal for admin approval.
 // Actual disbursement happens in AdminWalletUsecase.ApproveWithdrawal.
 func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, req *wallet.InitiateWithdrawalRequest) (*wallet.WithdrawalRequest, error) {
@@ -261,8 +287,7 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 		Status:       wallet.TxStatusPending,
 	}
 
-	// Lock the row, re-check the guard and balance against fresh values, then reserve the funds
-	// and create the request atomically. A failed Create rolls the lock back automatically.
+	// 1. Reserve the funds and create pending request atomically
 	err = uc.tx.Do(ctx, func(ctx context.Context) error {
 		locked, err := uc.walletRepo.FindByIDForUpdate(ctx, w.WalletID)
 		if err != nil {
@@ -271,7 +296,6 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 		if locked.Status != wallet.WalletStatusActive {
 			return wallet.ErrWalletSuspended
 		}
-
 		// Guard: only one pending withdrawal per wallet
 		existing, err := uc.withdrawalRepo.FindPendingByWalletID(ctx, locked.WalletID)
 		if err != nil {
@@ -297,6 +321,65 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 		return nil, err
 	}
 
+	// 2. Pay out via the disbursement provider (PayPal) outside the DB lock
+	providerRef, err := uc.disburseSvc.CreateDisbursement(ctx, &wallet.DisbursementRequest{
+		WithdrawalID:   withdrawalReq.WithdrawalID,
+		Amount:         withdrawalReq.Amount,
+		Currency:       withdrawalReq.Currency,
+		RecipientEmail: withdrawalReq.PayPalEmail,
+	})
+
+	// 3. Settle the ledger based on PayPal outcome
+	if err != nil {
+		// Failed: release the locked amount and mark failed
+		_ = uc.tx.Do(ctx, func(ctx context.Context) error {
+			locked, _ := uc.walletRepo.FindByIDForUpdate(ctx, w.WalletID)
+			_ = uc.walletRepo.UpdateLocked(ctx, locked.WalletID, locked.Locked-req.Amount)
+			_ = uc.withdrawalRepo.UpdateStatus(ctx, withdrawalReq.WithdrawalID, wallet.TxStatusFailed, "", err.Error())
+			return nil
+		})
+		return nil, fmt.Errorf("disburse failed: %w", err)
+	}
+
+	// Success: deduct balance, release lock, record transaction, mark completed
+	err = uc.tx.Do(ctx, func(ctx context.Context) error {
+		locked, err := uc.walletRepo.FindByIDForUpdate(ctx, w.WalletID)
+		if err != nil {
+			return err
+		}
+		balanceBefore := locked.Balance
+		newBalance := locked.Balance - req.Amount
+		newLocked := locked.Locked - req.Amount
+
+		if err := uc.walletRepo.UpdateBalance(ctx, locked.WalletID, newBalance); err != nil {
+			return err
+		}
+		if err := uc.walletRepo.UpdateLocked(ctx, locked.WalletID, newLocked); err != nil {
+			return err
+		}
+		if err := uc.txRepo.Create(ctx, &wallet.Transaction{
+			TxID:          uuid.New().String(),
+			WalletID:      locked.WalletID,
+			UserID:        withdrawalReq.UserID,
+			Type:          wallet.TxTypeWithdrawal,
+			Status:        wallet.TxStatusCompleted,
+			Amount:        req.Amount,
+			BalanceBefore: balanceBefore,
+			BalanceAfter:  newBalance,
+			Currency:      req.Currency,
+			RefID:         withdrawalReq.WithdrawalID,
+			Description:   fmt.Sprintf("Withdrawal to PayPal %s", withdrawalReq.PayPalEmail),
+		}); err != nil {
+			return err
+		}
+		return uc.withdrawalRepo.UpdateStatus(ctx, withdrawalReq.WithdrawalID, wallet.TxStatusCompleted, providerRef, "")
+	})
+	if err != nil {
+		return nil, fmt.Errorf("settle withdrawal: %w", err)
+	}
+
+	withdrawalReq.Status = wallet.TxStatusCompleted
+	withdrawalReq.ProviderRef = providerRef
 	return withdrawalReq, nil
 }
 

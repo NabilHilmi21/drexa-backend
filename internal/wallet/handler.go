@@ -2,9 +2,9 @@ package wallet
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
-	"io"
 	"strings"
 
 	"drexa/internal/auth"
@@ -18,9 +18,9 @@ import (
 type BalanceResponse struct {
 	WalletID  string `json:"wallet_id"`
 	Currency  string `json:"currency"`
-	Balance   int64  `json:"balance"`    // total balance in smallest unit
-	Locked    int64  `json:"locked"`     // amount reserved (open orders / pending withdrawal)
-	Available int64  `json:"available"`  // spendable = balance - locked
+	Balance   int64  `json:"balance"`   // total balance in smallest unit
+	Locked    int64  `json:"locked"`    // amount reserved (open orders / pending withdrawal)
+	Available int64  `json:"available"` // spendable = balance - locked
 	Status    string `json:"status"`
 }
 
@@ -65,6 +65,10 @@ type TransactionResponse struct {
 }
 
 type ConfirmDepositWebhookRequest struct {
+	ProviderRef string `json:"provider_ref"`
+}
+
+type VerifyDepositHTTPRequest struct {
 	ProviderRef string `json:"provider_ref"`
 }
 
@@ -318,6 +322,37 @@ func HandleDepositWebhook(uc WalletUsecase, webhookSecret string) http.HandlerFu
 	}
 }
 
+// HandleVerifyDeposit allows the client to explicitly verify a payment status.
+// This acts as a fallback for the webhook, useful in local dev or if the webhook fails.
+func HandleVerifyDeposit(uc WalletUsecase) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		_, ok := userFromCtx(r)
+		if !ok {
+			sendJSON(w, http.StatusUnauthorized, MessageResponse{Error: "unauthorized"})
+			return
+		}
+
+		var req VerifyDepositHTTPRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			sendJSON(w, http.StatusBadRequest, MessageResponse{Error: "invalid request body"})
+			return
+		}
+
+		if req.ProviderRef == "" {
+			sendJSON(w, http.StatusBadRequest, MessageResponse{Error: "provider_ref is required"})
+			return
+		}
+
+		if err := uc.VerifyDeposit(r.Context(), req.ProviderRef); err != nil {
+			// We only return 500 for real errors. If it just hasn't succeeded, it doesn't return an error.
+			sendJSON(w, http.StatusInternalServerError, MessageResponse{Error: err.Error()})
+			return
+		}
+
+		sendJSON(w, http.StatusOK, MessageResponse{Message: "deposit verified"})
+	}
+}
+
 // HandleInitiateWithdrawal queues a withdrawal request (pending admin approval)
 func HandleInitiateWithdrawal(uc WalletUsecase) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -457,7 +492,6 @@ func HandleCryptoWithdrawal(uc WalletUsecase) http.HandlerFunc {
 }
 
 // ─── Admin Wallet Handlers ────────────────────────────────────────────────────
-
 
 // HandleAdminListWithdrawals lists all pending withdrawals for admin review
 func HandleAdminListWithdrawals(uc AdminWalletUsecase) http.HandlerFunc {

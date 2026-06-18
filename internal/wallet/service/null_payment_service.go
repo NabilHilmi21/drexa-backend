@@ -42,3 +42,7 @@ func (s *NullPaymentService) CreatePaymentIntent(
 	clientSecret = providerRef + "_secret_mock"
 	return clientSecret, providerRef, nil
 }
+
+func (s *NullPaymentService) VerifyPayment(ctx context.Context, providerRef string) (bool, error) {
+	return true, nil
+}
