@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"drexa/internal/wallet"
@@ -147,7 +148,11 @@ func (s *TatumService) SendTransaction(ctx context.Context, chain string, amount
 		if err != nil {
 			return "", fmt.Errorf("invalid btc amount: %w", err)
 		}
-		
+		// Guard: must be a real funded hot-wallet address, never an xpub.
+		if s.cfg.BTCAddress == "" || strings.HasPrefix(s.cfg.BTCAddress, "xpub") || strings.HasPrefix(s.cfg.BTCAddress, "tpub") {
+			return "", fmt.Errorf("BTC hot-wallet address not configured (set BTC_HOT_ADDRESS to the funded address of BTC_MASTER_PRIVATE_KEY)")
+		}
+
 		req := map[string]interface{}{
 			"fromAddress": []map[string]interface{}{
 				{
@@ -189,13 +194,25 @@ func (s *TatumService) SendTransaction(ctx context.Context, chain string, amount
 	return "", fmt.Errorf("unsupported chain for sending transactions: %s", chain)
 }
 
+// tatumChainCode maps our internal chain name to Tatum's currency/chain code.
+func tatumChainCode(chain string) string {
+	switch chain {
+	case "bitcoin":
+		return "BTC"
+	case "ethereum":
+		return "ETH"
+	default:
+		return chain
+	}
+}
+
 // SubscribeAddressWebhook subscribes an address to receive webhooks for deposits.
 func (s *TatumService) SubscribeAddressWebhook(ctx context.Context, chain, address string) (string, error) {
 	req := map[string]interface{}{
 		"type": "ADDRESS_TRANSACTION",
 		"attr": map[string]interface{}{
 			"address": address,
-			"chain":   chain,
+			"chain":   tatumChainCode(chain), // Tatum expects "BTC"/"ETH", not "bitcoin"/"ethereum"
 			"url":     fmt.Sprintf("%s/api/v1/wallet/crypto/webhook", s.cfg.WebhookBaseURL),
 		},
 	}

@@ -151,6 +151,27 @@ func Load() *Config {
 	viper.SetDefault("ESCROW_CHAIN_ID", 0)
 	viper.SetDefault("ESCROW_CONFIRM_TIMEOUT", "90s")
 
+	// Tatum: pick the API key for the active network and tolerate both env-var
+	// naming conventions; the master xpub may live under *_XPUB or *_ADDRESS.
+	tatumKey := viper.GetString("TATUM_API_KEY_TESTNET")
+	if viper.GetString("TATUM_ENV") == "mainnet" {
+		tatumKey = viper.GetString("TATUM_API_KEY_MAINNET")
+	}
+	if tatumKey == "" {
+		tatumKey = viper.GetString("TATUM_TESTNET_API_KEY")
+	}
+	if tatumKey == "" {
+		tatumKey = viper.GetString("TATUM_WALLET_API_KEY")
+	}
+	btcXpub := viper.GetString("BTC_MASTER_XPUB")
+	if btcXpub == "" {
+		btcXpub = viper.GetString("BTC_MASTER_ADDRESS")
+	}
+	ethXpub := viper.GetString("ETH_MASTER_XPUB")
+	if ethXpub == "" {
+		ethXpub = viper.GetString("ETH_MASTER_ADDRESS")
+	}
+
 	return &Config{
 		App: AppConfig{
 			Port:           viper.GetString("APP_PORT"),
@@ -188,15 +209,15 @@ func Load() *Config {
 			FromName:  viper.GetString("RESEND_FROM_NAME"),
 		},
 		Tatum: TatumConfig{
-			APIKey:        viper.GetString("TATUM_TESTNET_API_KEY"),
+			APIKey:         tatumKey,
 			BTCGatewayURL:  viper.GetString("TATUM_BTC_GATEWAY_URL"),
 			ETHGatewayURL:  viper.GetString("TATUM_ETH_GATEWAY_URL"),
 			WebhookBaseURL: viper.GetString("TATUM_WEBHOOK_BASE_URL"),
-			BTCXpub:        viper.GetString("BTC_MASTER_XPUB"),
-			ETHXpub:       viper.GetString("ETH_MASTER_XPUB"),
-			BTCAddress:    viper.GetString("BTC_MASTER_ADDRESS"),
-			BTCPrivateKey: viper.GetString("BTC_MASTER_PRIVATE_KEY"),
-			ETHPrivateKey: viper.GetString("ETH_MASTER_PRIVATE_KEY"),
+			BTCXpub:        btcXpub,
+			ETHXpub:        ethXpub,
+			BTCAddress:     viper.GetString("BTC_HOT_ADDRESS"), // funded hot-wallet address for the BTC_MASTER_PRIVATE_KEY (NOT the xpub)
+			BTCPrivateKey:  viper.GetString("BTC_MASTER_PRIVATE_KEY"),
+			ETHPrivateKey:  viper.GetString("ETH_MASTER_PRIVATE_KEY"),
 		},
 		Stripe: StripeConfig{
 			SecretKey:      viper.GetString("STRIPE_SECRET_KEY"),
