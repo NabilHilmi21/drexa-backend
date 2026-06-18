@@ -245,25 +245,33 @@ POST /payments/withdraw
 
 🔒 **Protected**
 
-Debits the user's wallet balance. Minimum withdrawal: **$10.00** (1000 cents).
+Locks the user's wallet balance and queues a withdrawal for admin review. Payout is sent via
+**PayPal Payouts** to `paypal_email` once an admin approves. Requires approved KYC (level ≥ 1).
+Minimum withdrawal: **$10.00** (1000 cents).
 
 **Request**
 ```json
 {
-  "amount": 2000
+  "amount": 2000,
+  "currency": "USD",
+  "paypal_email": "recipient@example.com"
 }
 ```
 
 > Amounts are in cents. `2000` = $20.00.
 
-**Response `200`**
+**Response `201`**
 ```json
-{ "message": "withdrawal recorded" }
+{
+  "withdrawal_id": "…",
+  "status": "pending",
+  "message": "withdrawal request submitted, pending review"
+}
 ```
 
-**Response `400`** — amount below minimum or invalid
+**Response `400`** — amount below minimum, invalid, or missing `paypal_email`
 ```json
-{ "error": "minimum withdrawal is $10" }
+{ "error": "a recipient PayPal email is required for withdrawal" }
 ```
 
 **Response `422`** — not enough balance

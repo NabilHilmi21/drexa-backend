@@ -47,11 +47,9 @@ type DepositIntentResponse struct {
 }
 
 type InitiateWithdrawalHTTPRequest struct {
-	Amount        int64  `json:"amount"`
-	Currency      string `json:"currency"`
-	BankCode      string `json:"bank_code"`      // e.g. "BCA"
-	AccountNumber string `json:"account_number"` // destination bank account
-	AccountName   string `json:"account_name"`
+	Amount      int64  `json:"amount"`
+	Currency    string `json:"currency"`
+	PayPalEmail string `json:"paypal_email"` // recipient PayPal account for the payout
 }
 
 type TransactionResponse struct {
@@ -342,15 +340,13 @@ func HandleInitiateWithdrawal(uc WalletUsecase) http.HandlerFunc {
 		}
 
 		withdrawalReq, err := uc.InitiateWithdrawal(r.Context(), claims.UserID, &InitiateWithdrawalRequest{
-			Amount:        req.Amount,
-			Currency:      normalizeCurrency(req.Currency),
-			BankCode:      req.BankCode,
-			AccountNumber: req.AccountNumber,
-			AccountName:   req.AccountName,
+			Amount:      req.Amount,
+			Currency:    normalizeCurrency(req.Currency),
+			PayPalEmail: req.PayPalEmail,
 		})
 		if err != nil {
 			switch err {
-			case ErrInvalidAmount, ErrWithdrawalAmountMin:
+			case ErrInvalidAmount, ErrWithdrawalAmountMin, ErrRecipientRequired:
 				sendJSON(w, http.StatusBadRequest, MessageResponse{Error: err.Error()})
 			case ErrInsufficientBalance:
 				sendJSON(w, http.StatusUnprocessableEntity, MessageResponse{Error: err.Error()})

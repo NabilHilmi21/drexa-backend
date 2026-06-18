@@ -72,14 +72,39 @@ func (uc *cryptoWalletUsecase) getOrCreateAddress(ctx context.Context, userID st
 		return nil, info, err
 	}
 
-	// First time for this user+currency — generate a wallet and derive the address.
-	xpub, err := uc.provider.GenerateWallet(ctx, info.chain)
+	// Look up the master xpub for the chain
+	xpub, err := uc.provider.GetXpub(info.chain)
 	if err != nil {
-		return nil, info, fmt.Errorf("generate wallet: %w", err)
+		return nil, info, fmt.Errorf("get master xpub: %w", err)
 	}
-	address, err := uc.provider.DeriveAddress(ctx, info.chain, xpub, 0)
+
+	// Get the highest derivation index currently in use
+	highestIndex, err := uc.addrRepo.GetHighestDerivationIndex(ctx, info.chain)
+	if err != nil {
+		return nil, info, fmt.Errorf("get highest derivation index: %w", err)
+	}
+
+	nextIndex := highestIndex
+	// If the DB is completely empty for this chain, GetHighestDerivationIndex returns 0 (COALESCE).
+	// Actually, we need to be careful: the first user gets index 1, or 0? 
+	// If we use COALESCE(MAX(derivation_index), -1) we can get 0. 
+	// Or we can just increment by 1. Since COALESCE returned 0, if there are NO records, highest is 0. 
+	// So let's check if there are NO records. Actually just incrementing from 0 is fine, 
+	// but wait: if the first user uses 0, the max is 0. The next user should use 1.
+	// But `COALESCE(MAX, 0)` returns 0 for an empty table AND for a table where max is 0.
+	// That's a tiny bug. Let's assume the first derivation index is 1. We will do:
+	// wait, let's just do `highestIndex + 1`. The first user will be index 1.
+	// If the table was empty, highest is 0, so first user is 1. If max is 1, next is 2.
+	nextIndex = highestIndex + 1
+
+	address, err := uc.provider.DeriveAddress(ctx, info.chain, xpub, nextIndex)
 	if err != nil {
 		return nil, info, fmt.Errorf("derive address: %w", err)
+	}
+
+	_, err = uc.provider.SubscribeAddressWebhook(ctx, info.chain, address)
+	if err != nil {
+		return nil, info, fmt.Errorf("subscribe webhook: %w", err)
 	}
 
 	rec := &wallet.CryptoAddress{
@@ -89,7 +114,7 @@ func (uc *cryptoWalletUsecase) getOrCreateAddress(ctx context.Context, userID st
 		Chain:           info.chain,
 		Address:         address,
 		Xpub:            xpub,
-		DerivationIndex: 0,
+		DerivationIndex: nextIndex,
 	}
 	if err := uc.addrRepo.Create(ctx, rec); err != nil {
 		return nil, info, fmt.Errorf("save address: %w", err)
@@ -180,15 +205,21 @@ func (uc *cryptoWalletUsecase) HandleCryptoWebhook(ctx context.Context, payload 
 			return err
 		}
 
-		// amount in webhook is usually a string from Tatum, we need to convert to int64 smallest unit
-		// but since we are replacing sharedwallet exactly, let's assume `payload.Amount` is the smallest unit 
-		// string representation, or we parse it. The prompt says amount is string, let's parse it as int64.
-		// In a real system, we'd need big.Int and correct decimals.
-		var amountInt64 int64
-		_, err = fmt.Sscanf(payload.Amount, "%d", &amountInt64)
+		// The amount in webhook is usually a string representing the coin's main unit (e.g. "0.005").
+		// We parse it as a float64 and convert it to the smallest unit (satoshi / wei).
+		var amountFloat float64
+		_, err = fmt.Sscanf(payload.Amount, "%f", &amountFloat)
 		if err != nil {
-			// For crypto it might be float, so let's try a simple fallback
 			return wallet.ErrInvalidAmount
+		}
+
+		var amountInt64 int64
+		if addrRec.Currency == wallet.CurrencyBTC {
+			amountInt64 = int64(amountFloat * 100_000_000) // 10^8 satoshis
+		} else if addrRec.Currency == wallet.CurrencyETH {
+			amountInt64 = int64(amountFloat * 1_000_000_000_000_000_000) // 10^18 wei
+		} else {
+			return wallet.ErrUnsupportedCurrency
 		}
 
 		balanceBefore := lockedW.Balance

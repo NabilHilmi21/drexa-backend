@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -240,6 +241,9 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 	if req.Amount < minWithdrawalFor(req.Currency) {
 		return nil, wallet.ErrWithdrawalAmountMin
 	}
+	if strings.TrimSpace(req.PayPalEmail) == "" {
+		return nil, wallet.ErrRecipientRequired
+	}
 
 	// Resolve the wallet id outside the transaction; the balance decision happens under lock below.
 	w, err := uc.walletRepo.FindByUserAndCurrency(ctx, userID, req.Currency)
@@ -248,15 +252,13 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 	}
 
 	withdrawalReq := &wallet.WithdrawalRequest{
-		WithdrawalID:  uuid.New().String(),
-		UserID:        userID,
-		WalletID:      w.WalletID,
-		Amount:        req.Amount,
-		Currency:      req.Currency,
-		BankCode:      req.BankCode,
-		AccountNumber: req.AccountNumber, // TODO: encrypt before storing
-		AccountName:   req.AccountName,
-		Status:        wallet.TxStatusPending,
+		WithdrawalID: uuid.New().String(),
+		UserID:       userID,
+		WalletID:     w.WalletID,
+		Amount:       req.Amount,
+		Currency:     req.Currency,
+		PayPalEmail:  strings.TrimSpace(req.PayPalEmail),
+		Status:       wallet.TxStatusPending,
 	}
 
 	// Lock the row, re-check the guard and balance against fresh values, then reserve the funds
@@ -457,16 +459,19 @@ func (uc *walletUsecase) InitiateCryptoWithdrawal(ctx context.Context, userID st
 	// Step 2: Send Crypto via Provider (Tatum) outside of DB lock
 	// Convert currency to chain name. We can import chains map or assume provider accepts currency string for now
 	chain := ""
+	var amountStr string
 	if req.Currency == wallet.CurrencyBTC {
 		chain = "bitcoin"
+		amountStr = fmt.Sprintf("%.8f", float64(req.Amount)/100_000_000.0)
 	} else if req.Currency == wallet.CurrencyETH {
 		chain = "ethereum"
+		amountStr = fmt.Sprintf("%.18f", float64(req.Amount)/1_000_000_000_000_000_000.0)
 	} else {
 		// Should not happen if correctly gated
 		return txDebit, errors.New("unsupported crypto currency")
 	}
 
-	_, err = uc.cryptoProvider.SendTransaction(ctx, chain, fmt.Sprintf("%d", req.Amount), req.ToAddress)
+	_, err = uc.cryptoProvider.SendTransaction(ctx, chain, amountStr, req.ToAddress)
 
 	// Step 3: Settle the outcome
 	_ = uc.tx.Do(ctx, func(ctx context.Context) error {
@@ -520,26 +525,26 @@ func (uc *walletUsecase) InitiateCryptoWithdrawal(ctx context.Context, userID st
 // ─── Admin Usecase ───────────────────────────────────────────────────────────
 
 type adminWalletUsecase struct {
-	walletRepo     wallet.WalletRepository
-	txRepo         wallet.TransactionRepository
-	withdrawalRepo wallet.WithdrawalRepository
-	paymentSvc     wallet.PaymentService
-	tx             wallet.TxManager
+	walletRepo      wallet.WalletRepository
+	txRepo          wallet.TransactionRepository
+	withdrawalRepo  wallet.WithdrawalRepository
+	disbursementSvc wallet.DisbursementService
+	tx              wallet.TxManager
 }
 
 func NewAdminWalletUsecase(
 	walletRepo wallet.WalletRepository,
 	txRepo wallet.TransactionRepository,
 	withdrawalRepo wallet.WithdrawalRepository,
-	paymentSvc wallet.PaymentService,
+	disbursementSvc wallet.DisbursementService,
 	tx wallet.TxManager,
 ) wallet.AdminWalletUsecase {
 	return &adminWalletUsecase{
-		walletRepo:     walletRepo,
-		txRepo:         txRepo,
-		withdrawalRepo: withdrawalRepo,
-		paymentSvc:     paymentSvc,
-		tx:             tx,
+		walletRepo:      walletRepo,
+		txRepo:          txRepo,
+		withdrawalRepo:  withdrawalRepo,
+		disbursementSvc: disbursementSvc,
+		tx:              tx,
 	}
 }
 
@@ -613,8 +618,8 @@ func (uc *adminWalletUsecase) Debit(ctx context.Context, walletID string, amount
 }
 
 func (uc *adminWalletUsecase) ListPendingWithdrawals(ctx context.Context) ([]wallet.WithdrawalRequest, error) {
-	// Fetch all pending withdrawals — using page 1 with large limit for admin queue
-	return uc.withdrawalRepo.FindByUserID(ctx, "", 200, 0)
+	// Admin review queue — every withdrawal still awaiting approval, across all users.
+	return uc.withdrawalRepo.FindPending(ctx, 200, 0)
 }
 
 func (uc *adminWalletUsecase) ApproveWithdrawal(ctx context.Context, withdrawalID, adminID string) error {
@@ -626,15 +631,14 @@ func (uc *adminWalletUsecase) ApproveWithdrawal(ctx context.Context, withdrawalI
 		return fmt.Errorf("withdrawal is not in pending state")
 	}
 
-	// Disburse via payment provider. This is an external, non-reversible side-effect, so it stays
-	// outside the DB transaction — we don't want to hold a row lock across a network call.
-	providerRef, err := uc.paymentSvc.CreateDisbursement(ctx, &wallet.DisbursementRequest{
-		WithdrawalID:  wr.WithdrawalID,
-		Amount:        wr.Amount,
-		Currency:      wr.Currency,
-		BankCode:      wr.BankCode,
-		AccountNumber: wr.AccountNumber,
-		AccountName:   wr.AccountName,
+	// Pay out via the disbursement provider (PayPal). This is an external, non-reversible
+	// side-effect, so it stays outside the DB transaction — we don't want to hold a row lock
+	// across a network call.
+	providerRef, err := uc.disbursementSvc.CreateDisbursement(ctx, &wallet.DisbursementRequest{
+		WithdrawalID:   wr.WithdrawalID,
+		Amount:         wr.Amount,
+		Currency:       wr.Currency,
+		RecipientEmail: wr.PayPalEmail,
 	})
 	if err != nil {
 		return fmt.Errorf("disburse: %w", err)
@@ -669,7 +673,7 @@ func (uc *adminWalletUsecase) ApproveWithdrawal(ctx context.Context, withdrawalI
 			BalanceAfter:  newBalance,
 			Currency:      wr.Currency,
 			RefID:         wr.WithdrawalID,
-			Description:   fmt.Sprintf("Withdrawal to %s %s approved by admin %s", wr.BankCode, wr.AccountNumber, adminID),
+			Description:   fmt.Sprintf("Withdrawal to PayPal %s approved by admin %s", wr.PayPalEmail, adminID),
 		}); err != nil {
 			return err
 		}

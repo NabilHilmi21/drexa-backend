@@ -48,3 +48,16 @@ func (r *cryptoAddressRepository) FindByAddress(ctx context.Context, address str
 	}
 	return &addr, nil
 }
+
+func (r *cryptoAddressRepository) GetHighestDerivationIndex(ctx context.Context, chain string) (int, error) {
+	var highestIndex int
+	err := dbFromContext(ctx, r.db).
+		Model(&wallet.CryptoAddress{}).
+		Where("chain = ?", chain).
+		Select("COALESCE(MAX(derivation_index), 0)").
+		Scan(&highestIndex).Error
+	if err != nil {
+		return 0, err
+	}
+	return highestIndex, nil
+}

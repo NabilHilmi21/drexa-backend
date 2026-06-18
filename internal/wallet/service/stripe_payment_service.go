@@ -92,10 +92,3 @@ func (s *StripePaymentService) CreatePaymentIntent(
 
 	return pi.ClientSecret, pi.ID, nil
 }
-
-func (s *StripePaymentService) CreateDisbursement(
-	ctx context.Context,
-	req *wallet.DisbursementRequest,
-) (providerRef string, err error) {
-	return "", fmt.Errorf("stripe disbursement to arbitrary bank accounts requires Stripe Connect and is not implemented")
-}

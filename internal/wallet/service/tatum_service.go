@@ -81,6 +81,22 @@ func (s *TatumService) GenerateWallet(ctx context.Context, chain string) (string
 	return resp.Xpub, nil
 }
 
+// GetXpub returns the configured master extended public key for the chain.
+func (s *TatumService) GetXpub(chain string) (string, error) {
+	if chain == "bitcoin" {
+		if s.cfg.BTCXpub == "" {
+			return "", fmt.Errorf("missing BTC master xpub in config")
+		}
+		return s.cfg.BTCXpub, nil
+	} else if chain == "ethereum" {
+		if s.cfg.ETHXpub == "" {
+			return "", fmt.Errorf("missing ETH master xpub in config")
+		}
+		return s.cfg.ETHXpub, nil
+	}
+	return "", fmt.Errorf("unsupported chain for xpub: %s", chain)
+}
+
 // DeriveAddress derives the receiving address for an xpub at the given index.
 func (s *TatumService) DeriveAddress(ctx context.Context, chain, xpub string, index int) (string, error) {
 	var resp struct {
@@ -171,4 +187,24 @@ func (s *TatumService) SendTransaction(ctx context.Context, chain string, amount
 	}
 
 	return "", fmt.Errorf("unsupported chain for sending transactions: %s", chain)
+}
+
+// SubscribeAddressWebhook subscribes an address to receive webhooks for deposits.
+func (s *TatumService) SubscribeAddressWebhook(ctx context.Context, chain, address string) (string, error) {
+	req := map[string]interface{}{
+		"type": "ADDRESS_TRANSACTION",
+		"attr": map[string]interface{}{
+			"address": address,
+			"chain":   chain,
+			"url":     fmt.Sprintf("%s/api/v1/wallet/crypto/webhook", s.cfg.WebhookBaseURL),
+		},
+	}
+	
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := s.doRequest(ctx, http.MethodPost, "/v3/subscription", req, &resp); err != nil {
+		return "", err
+	}
+	return resp.ID, nil
 }
