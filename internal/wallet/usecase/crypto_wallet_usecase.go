@@ -102,10 +102,10 @@ func (uc *cryptoWalletUsecase) getOrCreateAddress(ctx context.Context, userID st
 		return nil, info, fmt.Errorf("derive address: %w", err)
 	}
 
-	_, err = uc.provider.SubscribeAddressWebhook(ctx, info.chain, address)
-	if err != nil {
-		return nil, info, fmt.Errorf("subscribe webhook: %w", err)
-	}
+	// Webhook subscription is best-effort — never block deposit-address creation on it.
+	// Tatum subscriptions can fail (plan limits, chain-code differences); the balance
+	// endpoint still reflects on-chain deposits even without the push webhook.
+	_, _ = uc.provider.SubscribeAddressWebhook(ctx, info.chain, address)
 
 	rec := &wallet.CryptoAddress{
 		ID:              uuid.NewString(),
@@ -181,8 +181,10 @@ func (uc *cryptoWalletUsecase) HandleCryptoWebhook(ctx context.Context, payload 
 		}
 	}
 
-	if payload.Confirmations < requiredConf {
-		// Just drop or ignore until next webhook comes in with enough confirmations
+	// Only enforce a confirmation threshold when Tatum actually reports one.
+	// ADDRESS_TRANSACTION notifications often omit `confirmations` (fire on detection);
+	// crediting is idempotent by txId below, so a missing count must not drop the deposit.
+	if payload.Confirmations > 0 && payload.Confirmations < requiredConf {
 		return fmt.Errorf("insufficient confirmations: %d < %d", payload.Confirmations, requiredConf)
 	}
 
@@ -196,7 +198,18 @@ func (uc *cryptoWalletUsecase) HandleCryptoWebhook(ctx context.Context, payload 
 		}
 
 		w, err := uc.walletRepo.FindByUserAndCurrency(ctx, addrRec.UserID, addrRec.Currency)
-		if err != nil {
+		if errors.Is(err, wallet.ErrWalletNotFound) {
+			// First deposit for this user+currency — create the ledger wallet on the fly.
+			w = &wallet.Wallet{
+				WalletID: uuid.NewString(),
+				UserID:   addrRec.UserID,
+				Currency: addrRec.Currency,
+				Status:   wallet.WalletStatusActive,
+			}
+			if cerr := uc.walletRepo.Create(ctx, w); cerr != nil {
+				return cerr
+			}
+		} else if err != nil {
 			return err
 		}
 

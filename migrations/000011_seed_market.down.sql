@@ -11,3 +11,6 @@ DELETE FROM coins WHERE coin_id IN (
     'USDC','BTC','ETH','SOL','BNB','XRP','ADA','AVAX','LINK','DOGE','DOT',
     'MATIC','LTC','UNI','ATOM','XLM','NEAR','APT'
 );
+
+DELETE FROM trading_pairs WHERE pair_id IN ('BTC_USD', 'ETH_USD');
+DELETE FROM coins WHERE coin_id IN ('BTC', 'USD', 'ETH');

@@ -15,6 +15,7 @@ type WalletUsecase interface {
 	// frontend's embedded payment form (POST /payments/deposit/intent).
 	CreateDepositIntent(ctx context.Context, userID string, req *InitiateDepositRequest) (*DepositIntent, error)
 	ConfirmDeposit(ctx context.Context, providerRef string) error // called by webhook
+	VerifyDeposit(ctx context.Context, providerRef string) error  // explicit check by frontend
 
 	// Withdrawal flow (requires KYC approved + trading PIN verified upstream)
 	InitiateWithdrawal(ctx context.Context, userID string, req *InitiateWithdrawalRequest) (*WithdrawalRequest, error)
@@ -86,6 +87,9 @@ type PaymentService interface {
 	// CreatePaymentIntent creates a PaymentIntent and returns its client secret (consumed by the
 	// frontend Stripe Elements form) plus the provider reference ID used to reconcile the webhook.
 	CreatePaymentIntent(ctx context.Context, depositID string, amount int64, currency CurrencyCode, userEmail string) (clientSecret, providerRef string, err error)
+
+	// VerifyPayment verifies the payment status with the provider synchronously
+	VerifyPayment(ctx context.Context, providerRef string) (bool, error)
 }
 
 // DisbursementService abstracts the withdrawal (pay-out) provider integration — PayPal Payouts in

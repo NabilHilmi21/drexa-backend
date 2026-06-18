@@ -83,6 +83,8 @@ func addRoutes(
 	// ── Payments — Stripe PaymentIntent (embedded Elements flow) ──────────────
 	// The frontend's DepositPanel posts here to get a client_secret for Stripe.js.
 	mux.Handle("POST /api/v1/payments/deposit/intent", jwt(wallet.HandleCreateDepositIntent(walletUc)))
+	// The frontend's DepositPanel posts here to explicitly verify the payment intent.
+	mux.Handle("POST /api/v1/payments/deposit/verify", jwt(wallet.HandleVerifyDeposit(walletUc)))
 	// Stripe webhook alias (mirrors /wallet/deposit/webhook) — signature-verified, public.
 	mux.Handle("POST /api/v1/payments/webhook",        wallet.HandleDepositWebhook(walletUc, cfg.Stripe.WebhookSecret))
 
