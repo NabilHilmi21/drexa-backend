@@ -158,6 +158,37 @@ func (s *service) applyResult(ctx context.Context, taker *Order, result matching
 	return s.repo.Update(ctx, taker)
 }
 
+// OrderBookDepth returns the live aggregated book for a pair, converting the
+// engine's integer ticks/lots back into real prices using the pair's quoted
+// precision.
+func (s *service) OrderBookDepth(ctx context.Context, pairID string, maxLevels int) (*OrderBookSnapshot, error) {
+	pair, err := s.pairs.GetPair(ctx, pairID)
+	if err != nil {
+		return nil, err
+	}
+
+	depth := s.matcher.Depth(pairID, maxLevels)
+	snap := &OrderBookSnapshot{
+		PairID:  pairID,
+		Version: depth.Version,
+		Bids:    toBookLevels(depth.Bids, pair.PriceDecimals),
+		Asks:    toBookLevels(depth.Asks, pair.PriceDecimals),
+	}
+	return snap, nil
+}
+
+// toBookLevels converts engine tick/lot levels into float price levels.
+func toBookLevels(levels []matching.DepthLevel, priceDec int) []OrderBookLevel {
+	out := make([]OrderBookLevel, len(levels))
+	for i, l := range levels {
+		out[i] = OrderBookLevel{
+			Price:    ticksToPrice(l.Price, priceDec),
+			Quantity: lotsToQty(l.Volume),
+		}
+	}
+	return out
+}
+
 // CancelOrder removes a still-open order from the book and marks it cancelled.
 func (s *service) CancelOrder(ctx context.Context, userID, orderID string) (*Order, error) {
 	o, err := s.repo.FindByID(ctx, orderID)
