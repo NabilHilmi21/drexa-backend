@@ -15,6 +15,7 @@ type Config struct {
 	SendGrid SendGridConfig
 	Tatum    TatumConfig
 	Stripe   StripeConfig
+	Didit    DiditConfig
 }
 
 type AppConfig struct {
@@ -61,6 +62,14 @@ type StripeConfig struct {
 	PublishableKey string
 }
 
+// DiditConfig holds Didit identity-verification credentials.
+// WorkflowID is per-session config (not a secret) — kept here for convenience.
+type DiditConfig struct {
+	APIKey        string
+	WebhookSecret string
+	WorkflowID    string
+}
+
 func Load() *Config {
 	_ = godotenv.Load() // optional; env vars take precedence
 	viper.AutomaticEnv()
@@ -74,6 +83,8 @@ func Load() *Config {
 	viper.SetDefault("JWT_REFRESH_EXPIRATION", "168h")
 	viper.SetDefault("SENDGRID_FROM_NAME", "Drexa")
 	viper.SetDefault("APP_URL", "http://localhost:3000")
+	// Didit "Drexa" KYC workflow. Per-session config, not a secret — overridable via env.
+	viper.SetDefault("DIDIT_WORKFLOW_ID", "3b3ef226-0f3f-49cb-9be6-9fbfc19a0885")
 
 	return &Config{
 		App: AppConfig{
@@ -112,6 +123,11 @@ func Load() *Config {
 			SecretKey:      viper.GetString("STRIPE_SECRET_KEY"),
 			WebhookSecret:  viper.GetString("STRIPE_WEBHOOK_SECRET"),
 			PublishableKey: viper.GetString("STRIPE_PUBLISHABLE_KEY"),
+		},
+		Didit: DiditConfig{
+			APIKey:        viper.GetString("DIDIT_API_KEY"),
+			WebhookSecret: viper.GetString("DIDIT_WEBHOOK_SECRET"),
+			WorkflowID:    viper.GetString("DIDIT_WORKFLOW_ID"),
 		},
 	}
 }

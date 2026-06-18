@@ -61,6 +61,11 @@ func addRoutes(
 	mux.Handle("POST /api/v1/kyc/submit", jwt(http.HandlerFunc(kycH.HandleSubmit)))
 	mux.Handle("GET /api/v1/kyc/status",  jwt(http.HandlerFunc(kycH.HandleGetStatus)))
 
+	// ── KYC — Didit identity verification ─────────────────────────────────────
+	mux.Handle("POST /api/v1/kyc/didit/session", jwt(http.HandlerFunc(kycH.HandleStartDiditVerification)))
+	// Webhook is public; authenticated by the X-Signature-V2 HMAC, not JWT.
+	mux.Handle("POST /api/v1/kyc/didit/webhook", http.HandlerFunc(kycH.HandleDiditWebhook))
+
 	// ── KYC — admin facing (JWT + admin role) ─────────────────────────────────
 	mux.Handle("GET /api/v1/admin/kyc",                    jwt(admin(http.HandlerFunc(kycH.HandleAdminList))))
 	mux.Handle("GET /api/v1/admin/kyc/{id}",               jwt(admin(http.HandlerFunc(kycH.HandleAdminGet))))

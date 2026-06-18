@@ -80,6 +80,20 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 	kycUsecase      := kycUc.New(kycRepository, kycUserSvc)
 	adminKycUsecase := kycUc.NewAdmin(kycRepository, kycUserSvc, kycNotifSvc)
 
+	// Didit identity verification (optional — only when an API key is configured).
+	var diditKycUsecase kyc.DiditUsecase
+	if cfg.Didit.APIKey != "" {
+		// Didit returns the user to this frontend route after the hosted flow.
+		diditCallback := cfg.SendGrid.AppURL + "/verify/done"
+		diditService := kycSvc.NewDiditService(
+			cfg.Didit.APIKey,
+			cfg.Didit.WebhookSecret,
+			cfg.Didit.WorkflowID,
+			diditCallback,
+		)
+		diditKycUsecase = kycUc.NewDidit(kycRepository, kycUserSvc, kycNotifSvc, diditService)
+	}
+
 	getUserID := func(r *http.Request) string {
 		claims, ok := auth.UserFromContext(r.Context())
 		if !ok {
@@ -87,7 +101,7 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 		}
 		return claims.UserID
 	}
-	kycHandler := kyc.NewHandler(kycUsecase, adminKycUsecase, getUserID)
+	kycHandler := kyc.NewHandler(kycUsecase, adminKycUsecase, diditKycUsecase, getUserID)
 
 	// ── Order domain ──────────────────────────────────────────────────────────
 	orderRepository := orderRepo.New(db)
