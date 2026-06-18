@@ -28,6 +28,7 @@ type Config struct {
 	SendGrid SendGridConfig
 	Tatum    TatumConfig
 	Stripe   StripeConfig
+	PayPal   PayPalConfig
 	Didit    DiditConfig
 	Google   GoogleConfig
 }
@@ -86,6 +87,14 @@ type StripeConfig struct {
 	PublishableKey string
 }
 
+// PayPalConfig holds PayPal REST API credentials, used for the withdrawal payout leg
+// (PayPal Payouts). BaseURL selects sandbox vs live.
+type PayPalConfig struct {
+	ClientID string
+	Secret   string
+	BaseURL  string // e.g. https://api-m.sandbox.paypal.com (sandbox) or https://api-m.paypal.com (live)
+}
+
 // DiditConfig holds Didit identity-verification credentials.
 // WorkflowID is per-session config (not a secret) — kept here for convenience.
 type DiditConfig struct {
@@ -108,6 +117,8 @@ func Load() *Config {
 	viper.SetDefault("JWT_REFRESH_EXPIRATION", "168h")
 	viper.SetDefault("SENDGRID_FROM_NAME", "Drexa")
 	viper.SetDefault("APP_URL", "http://localhost:3000")
+	// PayPal Payouts — default to sandbox so local dev never hits live money.
+	viper.SetDefault("PAYPAL_BASE_URL", "https://api-m.sandbox.paypal.com")
 	// Didit "Drexa" KYC workflow. Per-session config, not a secret — overridable via env.
 	viper.SetDefault("DIDIT_WORKFLOW_ID", "3b3ef226-0f3f-49cb-9be6-9fbfc19a0885")
 
@@ -155,10 +166,16 @@ func Load() *Config {
 			WebhookSecret:  viper.GetString("STRIPE_WEBHOOK_SECRET"),
 			PublishableKey: viper.GetString("STRIPE_PUBLISHABLE_KEY"),
 		},
+		PayPal: PayPalConfig{
+			ClientID: viper.GetString("PAYPAL_CLIENT_ID"),
+			Secret:   viper.GetString("PAYPAL_SECRET"),
+			BaseURL:  viper.GetString("PAYPAL_BASE_URL"),
+		},
 		Didit: DiditConfig{
 			APIKey:        viper.GetString("DIDIT_API_KEY"),
 			WebhookSecret: viper.GetString("DIDIT_WEBHOOK_SECRET"),
 			WorkflowID:    viper.GetString("DIDIT_WORKFLOW_ID"),
+		},
 		Google: GoogleConfig{
 			ClientID: viper.GetString("GOOGLE_CLIENT_ID"),
 		},

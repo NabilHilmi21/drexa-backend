@@ -42,11 +42,3 @@ func (s *NullPaymentService) CreatePaymentIntent(
 	clientSecret = providerRef + "_secret_mock"
 	return clientSecret, providerRef, nil
 }
-
-func (s *NullPaymentService) CreateDisbursement(
-	ctx context.Context,
-	req *wallet.DisbursementRequest,
-) (providerRef string, err error) {
-	fakeRef := fmt.Sprintf("null_dis_%s_%d", req.WithdrawalID[:8], time.Now().Unix())
-	return fakeRef, nil
-}

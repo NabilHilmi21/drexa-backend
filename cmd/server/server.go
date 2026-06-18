@@ -119,11 +119,17 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 	if cfg.Stripe.SecretKey != "" {
 		paymentService = walletSvc.NewStripePaymentService(cfg.Stripe.SecretKey, cfg.SendGrid.AppURL)
 	}
+	// Withdrawal payouts go through PayPal (separate provider from Stripe deposits).
+	// Falls back to a no-op service when PayPal credentials aren't configured.
+	disbursementService := walletSvc.NewNullDisbursementService()
+	if cfg.PayPal.ClientID != "" && cfg.PayPal.Secret != "" {
+		disbursementService = walletSvc.NewPayPalDisbursementService(cfg.PayPal.ClientID, cfg.PayPal.Secret, cfg.PayPal.BaseURL)
+	}
 	cryptoProvider       := walletSvc.NewTatumService(cfg.Tatum, "https://api.tatum.io")
 	txManager            := walletRepo.NewTxManager(db)
-	
+
 	walletUsecase        := walletUc.NewWalletUsecase(walletRepository, txRepository, depositRepository, withdrawalRepository, paymentService, cryptoProvider, txManager)
-	adminWalletUsecase   := walletUc.NewAdminWalletUsecase(walletRepository, txRepository, withdrawalRepository, paymentService, txManager)
+	adminWalletUsecase   := walletUc.NewAdminWalletUsecase(walletRepository, txRepository, withdrawalRepository, disbursementService, txManager)
 	cryptoWalletUsecase  := walletUc.NewCryptoWalletUsecase(cryptoAddressRepo, walletRepository, txRepository, txManager, cryptoProvider, false)
 
 	// ── Market data (real-time WebSocket feed) ─────────────────────────────────

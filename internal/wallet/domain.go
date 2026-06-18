@@ -110,9 +110,10 @@ type WithdrawalRequest struct {
 	WalletID        string            `gorm:"column:wallet_id;index"`
 	Amount          int64             `gorm:"column:amount"`
 	Currency        CurrencyCode      `gorm:"column:currency"`
-	BankCode        string            `gorm:"column:bank_code"`      // e.g. "BCA", "BNI", "MANDIRI"
-	AccountNumber   string            `gorm:"column:account_number"` // encrypted before storage
-	AccountName     string            `gorm:"column:account_name"`
+	PayPalEmail     string            `gorm:"column:paypal_email"`   // recipient PayPal account for the payout
+	BankCode        string            `gorm:"column:bank_code"`      // legacy/unused for PayPal payouts
+	AccountNumber   string            `gorm:"column:account_number"` // legacy/unused for PayPal payouts
+	AccountName     string            `gorm:"column:account_name"`   // legacy/unused for PayPal payouts
 	Status          TransactionStatus `gorm:"column:status;default:pending"`
 	ProviderRef     string            `gorm:"column:provider_ref"` // disbursement ID from provider
 	RejectionReason string            `gorm:"column:rejection_reason"`
@@ -179,6 +180,7 @@ var (
 	ErrWithdrawalNotFound  = errors.New("withdrawal request not found")
 	ErrWithdrawalPending   = errors.New("a withdrawal is already pending for this wallet")
 	ErrWithdrawalAmountMin = errors.New("withdrawal amount is below the minimum")
+	ErrRecipientRequired   = errors.New("a recipient PayPal email is required for withdrawal")
 
 	// Transaction
 	ErrTransactionNotFound = errors.New("transaction not found")

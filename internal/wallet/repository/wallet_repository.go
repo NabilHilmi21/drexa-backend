@@ -237,6 +237,16 @@ func (r *withdrawalRepository) FindByUserID(ctx context.Context, userID string, 
 	return reqs, err
 }
 
+func (r *withdrawalRepository) FindPending(ctx context.Context, limit, offset int) ([]wallet.WithdrawalRequest, error) {
+	var reqs []wallet.WithdrawalRequest
+	err := dbFromContext(ctx, r.db).
+		Where("status = ?", wallet.TxStatusPending).
+		Order("created_at ASC").
+		Limit(limit).Offset(offset).
+		Find(&reqs).Error
+	return reqs, err
+}
+
 func (r *withdrawalRepository) FindPendingByWalletID(ctx context.Context, walletID string) (*wallet.WithdrawalRequest, error) {
 	var req wallet.WithdrawalRequest
 	err := dbFromContext(ctx, r.db).

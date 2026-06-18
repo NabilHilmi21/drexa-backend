@@ -91,6 +91,17 @@ STRIPE_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxxxxxxxx
 
 
 # =========================
+# PayPal Configuration (withdrawal payouts)
+# =========================
+# REST app credentials from https://developer.paypal.com/dashboard/applications
+# Used for the USD withdrawal payout leg (PayPal Payouts). Deposits use Stripe.
+PAYPAL_CLIENT_ID=
+PAYPAL_SECRET=
+# Sandbox (default) or live: https://api-m.paypal.com
+PAYPAL_BASE_URL=https://api-m.sandbox.paypal.com
+
+
+# =========================
 # Didit Identity Verification (KYC)
 # =========================
 

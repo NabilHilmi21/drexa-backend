@@ -72,4 +72,6 @@ type WithdrawalRepository interface {
 	FindByID(ctx context.Context, withdrawalID string) (*WithdrawalRequest, error)
 	FindByUserID(ctx context.Context, userID string, limit, offset int) ([]WithdrawalRequest, error)
 	FindPendingByWalletID(ctx context.Context, walletID string) (*WithdrawalRequest, error)
+	// FindPending returns all withdrawals awaiting admin review, oldest first (the admin queue).
+	FindPending(ctx context.Context, limit, offset int) ([]WithdrawalRequest, error)
 }
