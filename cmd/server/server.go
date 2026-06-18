@@ -101,7 +101,7 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 	withdrawalRepository := walletRepo.NewWithdrawalRepository(db)
 	cryptoAddressRepo    := walletRepo.NewCryptoAddressRepository(db)
 	paymentService       := walletSvc.NewNullPaymentService()
-	cryptoProvider       := walletSvc.NewTatumService(cfg.Tatum.APIKey, "https://api.tatum.io")
+	cryptoProvider       := walletSvc.NewTatumService(cfg.Tatum, "https://api.tatum.io")
 	txManager            := walletRepo.NewTxManager(db)
 	
 	walletUsecase        := walletUc.NewWalletUsecase(walletRepository, txRepository, depositRepository, withdrawalRepository, paymentService, cryptoProvider, txManager)
