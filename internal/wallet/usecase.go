@@ -73,8 +73,8 @@ type CryptoAsset struct {
 	Balance  string       `json:"balance"` // decimal string in main unit (e.g. "0.0123")
 }
 
-// PaymentService abstracts payment provider integration (Stripe, Midtrans, etc.)
-// Implement this per-provider in internal/wallet/service/
+// PaymentService abstracts the deposit (pay-in) provider integration — Stripe in this build.
+// Implement this per-provider in internal/wallet/service/.
 type PaymentService interface {
 	// CreatePaymentSession creates a hosted payment page and returns a URL + provider reference ID
 	CreatePaymentSession(ctx context.Context, depositID string, amount int64, currency CurrencyCode, userEmail string) (sessionURL, providerRef string, err error)
@@ -82,8 +82,13 @@ type PaymentService interface {
 	// CreatePaymentIntent creates a PaymentIntent and returns its client secret (consumed by the
 	// frontend Stripe Elements form) plus the provider reference ID used to reconcile the webhook.
 	CreatePaymentIntent(ctx context.Context, depositID string, amount int64, currency CurrencyCode, userEmail string) (clientSecret, providerRef string, err error)
+}
 
-	// CreateDisbursement sends money to a bank account and returns the provider's disbursement ID
+// DisbursementService abstracts the withdrawal (pay-out) provider integration — PayPal Payouts in
+// this build. Kept separate from PaymentService so deposits (Stripe) and withdrawals (PayPal) can
+// use different providers. Implement per-provider in internal/wallet/service/.
+type DisbursementService interface {
+	// CreateDisbursement sends money to the recipient and returns the provider's disbursement ID.
 	CreateDisbursement(ctx context.Context, req *DisbursementRequest) (providerRef string, err error)
 }
 
@@ -103,18 +108,14 @@ type DepositIntent struct {
 }
 
 type InitiateWithdrawalRequest struct {
-	Amount        int64
-	Currency      CurrencyCode
-	BankCode      string // e.g. "BCA", "BNI"
-	AccountNumber string
-	AccountName   string
+	Amount      int64
+	Currency    CurrencyCode
+	PayPalEmail string // recipient PayPal account that receives the payout
 }
 
 type DisbursementRequest struct {
-	WithdrawalID  string
-	Amount        int64
-	Currency      CurrencyCode
-	BankCode      string
-	AccountNumber string
-	AccountName   string
+	WithdrawalID   string
+	Amount         int64
+	Currency       CurrencyCode
+	RecipientEmail string // PayPal account to pay out to
 }

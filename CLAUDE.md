@@ -12,7 +12,11 @@
 - **Config**: Viper + godotenv, single `.env` file, secrets via env injection
 - **Logging**: zerolog structured logging, request ID propagation
 - **Market data**: Binance WS / CoinGecko API — TIDAK dipakai langsung sebagai harga eksekusi
-- **Payments**: Xendit/Midtrans (fiat IDR), crypto HD wallet per user; no Stripe
+- **Custody model**: Pooled/custodial. Master wallet (HD keys in `.env`) derives a deposit address per user (crypto); fiat (USD) deposits land via Stripe. Deposits credit the internal ledger; trades only move ledger balances; withdrawals debit the ledger then pay out externally.
+- **Payments**:
+  - **Deposits (pay-in)**: Stripe — `StripePaymentService` (`PaymentIntent` / Checkout). Crypto deposits via Tatum HD wallet per user.
+  - **Withdrawals (pay-out)**: PayPal Payouts — `PayPalDisbursementService` (OAuth2 client-credentials + `/v1/payments/payouts`), recipient by PayPal email. Falls back to `NullDisbursementService` when `PAYPAL_*` unset. Crypto withdrawals via Tatum.
+  - Deposit provider (Stripe) and payout provider (PayPal) are separate interfaces: `wallet.PaymentService` (pay-in) vs `wallet.DisbursementService` (pay-out).
 - **Notifications**: Twilio (SMS), SendGrid (email)
 - **KYC**: `internal/kyc/` domain — Submission state machine (pending → approved/rejected); narrow `kyc.UserService` adapter prevents circular import with auth; mock provider
 - **2FA**: TOTP (pquerna/otp); setup/enable/disable via protected endpoints; login returns challenge_token when 2FA enabled; challenge token has Scope="2fa_challenge" and is rejected by JWTMiddleware
@@ -119,7 +123,10 @@ drexa-backend/
 │   ├── 000003_wallet.{up,down}.sql   # wallets, ledger_entries, transactions, deposit_addresses
 │   ├── 000004_market.{up,down}.sql   # coins, trading_pairs, price_snapshots, candles
 │   ├── 000005_orders.{up,down}.sql   # orders, trades
-│   └── 000006_p2p.{up,down}.sql      # p2p_advertisements, p2p_orders, p2p_disputes
+│   ├── 000006_p2p.{up,down}.sql      # p2p_advertisements, p2p_orders, p2p_disputes
+│   ├── 000007_checkout.{up,down}.sql # purchases (Stripe managed checkout)
+│   ├── 000008_didit_kyc.{up,down}.sql# didit session columns + processed-events idempotency
+│   └── 000009_wallet_paypal.{up,down}.sql # withdrawal_requests.paypal_email (PayPal payouts)
 │
 ├── .env
 ├── go.mod
@@ -165,8 +172,8 @@ PostgreSQL runs on port `5432`. Server starts on `:8080`.
 
 - [ ] **2.1 Internal ledger (double-entry)** — atomic debit/credit; race condition prevention
 - [ ] **2.2 Multi-currency wallet** — available vs locked balance; lock on order submit
-- [ ] **2.3 Crypto deposit & withdrawal** — HD wallet derivation; DepositAddress entity already in schema
-- [ ] **2.4 Fiat deposit & withdrawal (IDR)** — Xendit/Midtrans; webhook handler; idempotency
+- [x] **2.3 Crypto deposit & withdrawal** — Tatum HD wallet derivation per user; deposit webhook credits ledger; on-chain withdrawal via provider
+- [x] **2.4 Fiat deposit (USD) & withdrawal (USD)** — Deposit: Stripe PaymentIntent + signature-verified webhook → ledger credit. Withdrawal: user submits with `paypal_email` → balance locked → admin approves → **PayPal Payouts** disbursement → atomic ledger settle; admin reject releases the lock. TODO: idempotency keys on the mutation endpoints (Fase 5.2)
 
 ### Fase 3 — Market Data & Price Feed
 
