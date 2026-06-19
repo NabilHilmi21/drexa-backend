@@ -136,14 +136,12 @@ type CreateAdInput struct {
 	MaxAmount     float64
 	PaymentMethod string
 	PaymentWindow int    // minutes
-	SellerAddress string // EVM refund destination
 }
 
 // CreateOrderInput is the payload to open an order against an advertisement.
 type CreateOrderInput struct {
 	AdvertisementID string
 	Amount          float64 // crypto amount to buy
-	BuyerAddress    string  // EVM release destination
 }
 
 // OpenDisputeInput is the payload to raise a dispute on an order.
@@ -162,6 +160,17 @@ type OnChainEscrow struct {
 }
 
 // ─── Ports (interfaces) ──────────────────────────────────────────────────────
+
+// WalletService integrates the P2P engine with the user's internal asset ledger
+// and their on-chain deposit addresses.
+type WalletService interface {
+	// GetDepositAddress returns the user's deposit address for the given chain/currency.
+	GetDepositAddress(ctx context.Context, userID, currency string) (string, error)
+	// DebitBalance deducts an amount from the user's internal ledger.
+	DebitBalance(ctx context.Context, userID, currency string, amount float64, refID, description string) error
+	// CreditBalance adds an amount to the user's internal ledger.
+	CreditBalance(ctx context.Context, userID, currency string, amount float64, refID, description string) error
+}
 
 // Repository persists P2P advertisements, orders, and disputes.
 type Repository interface {

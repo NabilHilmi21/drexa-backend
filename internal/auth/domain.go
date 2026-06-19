@@ -27,7 +27,6 @@ type User struct {
 	KycLevel         int       `gorm:"column:kyc_level;default:0"`
 	TwoFAEnabled     bool      `gorm:"column:two_fa_enabled;default:false"`
 	TwoFASecret      string    `gorm:"column:two_fa_secret;default:''"`
-	StripeCustomerID string    `gorm:"column:stripe_customer_id;default:''"`
 	CreatedAt        time.Time `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt        time.Time `gorm:"column:updated_at;autoUpdateTime"`
 }

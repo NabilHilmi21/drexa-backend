@@ -21,17 +21,18 @@ type service struct {
 	repo           p2p.Repository
 	escrow         chain.EscrowClient
 	confirmTimeout time.Duration
+	walletSvc      p2p.WalletService
 }
 
 // New returns the user-facing P2P usecase.
-func New(repo p2p.Repository, escrow chain.EscrowClient, confirmTimeout time.Duration) p2p.Usecase {
-	return &service{repo: repo, escrow: escrow, confirmTimeout: confirmTimeout}
+func New(repo p2p.Repository, escrow chain.EscrowClient, confirmTimeout time.Duration, walletSvc p2p.WalletService) p2p.Usecase {
+	return &service{repo: repo, escrow: escrow, confirmTimeout: confirmTimeout, walletSvc: walletSvc}
 }
 
 // NewAdmin returns the admin-facing P2P usecase (dispute resolution). It shares
 // the same backing implementation as New.
-func NewAdmin(repo p2p.Repository, escrow chain.EscrowClient, confirmTimeout time.Duration) p2p.AdminUsecase {
-	return &service{repo: repo, escrow: escrow, confirmTimeout: confirmTimeout}
+func NewAdmin(repo p2p.Repository, escrow chain.EscrowClient, confirmTimeout time.Duration, walletSvc p2p.WalletService) p2p.AdminUsecase {
+	return &service{repo: repo, escrow: escrow, confirmTimeout: confirmTimeout, walletSvc: walletSvc}
 }
 
 // chainCtx derives a context bounded by the configured tx-confirmation timeout.
@@ -49,8 +50,6 @@ func ptr(s string) *string { return &s }
 func (s *service) CreateAd(ctx context.Context, sellerID string, in p2p.CreateAdInput) (*p2p.P2PAdvertisement, error) {
 	in.PairID = strings.TrimSpace(in.PairID)
 	in.PaymentMethod = strings.TrimSpace(in.PaymentMethod)
-	in.SellerAddress = strings.TrimSpace(in.SellerAddress)
-
 	if in.PairID == "" || in.PaymentMethod == "" {
 		return nil, p2p.ErrInvalidInput
 	}
@@ -60,8 +59,10 @@ func (s *service) CreateAd(ctx context.Context, sellerID string, in p2p.CreateAd
 	if in.PaymentWindow <= 0 {
 		return nil, p2p.ErrInvalidInput
 	}
-	if !chain.IsAddress(in.SellerAddress) {
-		return nil, p2p.ErrInvalidAddress
+	
+	sellerAddress, err := s.walletSvc.GetDepositAddress(ctx, sellerID, "ETH")
+	if err != nil {
+		return nil, err
 	}
 
 	ad := &p2p.P2PAdvertisement{
@@ -73,7 +74,7 @@ func (s *service) CreateAd(ctx context.Context, sellerID string, in p2p.CreateAd
 		MaxAmount:       in.MaxAmount,
 		PaymentMethod:   in.PaymentMethod,
 		PaymentWindow:   in.PaymentWindow,
-		SellerAddress:   in.SellerAddress,
+		SellerAddress:   sellerAddress,
 		Status:          p2p.AdStatusActive,
 	}
 	if err := s.repo.CreateAd(ctx, ad); err != nil {
@@ -117,13 +118,13 @@ func (s *service) SetAdStatus(ctx context.Context, sellerID, adID string, status
 // ─── Orders ──────────────────────────────────────────────────────────────────
 
 func (s *service) CreateOrder(ctx context.Context, buyerID string, in p2p.CreateOrderInput) (*p2p.P2POrder, error) {
-	in.AdvertisementID = strings.TrimSpace(in.AdvertisementID)
-	in.BuyerAddress = strings.TrimSpace(in.BuyerAddress)
 	if in.AdvertisementID == "" || in.Amount <= 0 {
 		return nil, p2p.ErrInvalidInput
 	}
-	if !chain.IsAddress(in.BuyerAddress) {
-		return nil, p2p.ErrInvalidAddress
+	
+	buyerAddress, err := s.walletSvc.GetDepositAddress(ctx, buyerID, "ETH")
+	if err != nil {
+		return nil, err
 	}
 
 	ad, err := s.repo.GetAd(ctx, in.AdvertisementID)
@@ -144,7 +145,16 @@ func (s *service) CreateOrder(ctx context.Context, buyerID string, in p2p.Create
 		return nil, p2p.ErrInvalidAddress
 	}
 
+	parts := strings.Split(ad.PairID, "-")
+	baseCurrency := parts[0]
+
 	orderID := uuid.NewString()
+
+	// Deduct the crypto from the seller's internal asset ledger
+	if err := s.walletSvc.DebitBalance(ctx, ad.SellerID, baseCurrency, in.Amount, orderID, "P2P Escrow Funding"); err != nil {
+		return nil, err
+	}
+
 	now := time.Now().UTC()
 	order := &p2p.P2POrder{
 		P2POrderID:      orderID,
@@ -154,7 +164,7 @@ func (s *service) CreateOrder(ctx context.Context, buyerID string, in p2p.Create
 		Amount:          in.Amount,
 		TotalIDR:        in.Amount * ad.Price,
 		Status:          p2p.P2POrderCreated,
-		BuyerAddress:    in.BuyerAddress,
+		BuyerAddress:    buyerAddress,
 		SellerAddress:   ad.SellerAddress,
 		OnChainID:       s.escrow.OrderHash(orderID),
 		EscrowState:     chain.StateNone.String(),
@@ -169,6 +179,9 @@ func (s *service) CreateOrder(ctx context.Context, buyerID string, in p2p.Create
 	defer cancel()
 	txHash, err := s.escrow.CreateEscrow(cctx, orderID, order.BuyerAddress, order.SellerAddress, chain.EthToWei(in.Amount))
 	if err != nil {
+		// Refund the seller's internal balance because the escrow creation failed.
+		_ = s.walletSvc.CreditBalance(ctx, ad.SellerID, baseCurrency, in.Amount, orderID, "Refund: P2P Escrow Funding Failed")
+
 		// Roll the order back to cancelled so it can't be acted on.
 		order.Status = p2p.P2POrderCancelled
 		_ = s.repo.UpdateOrder(ctx, order)

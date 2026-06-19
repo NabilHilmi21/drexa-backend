@@ -48,6 +48,16 @@ func (r *orderRepository) FindByUserID(ctx context.Context, userID string) ([]or
 	return orders, nil
 }
 
+func (r *orderRepository) FindAllOpen(ctx context.Context) ([]order.Order, error) {
+	var orders []order.Order
+	if err := r.db.WithContext(ctx).
+		Where("status IN ?", []order.OrderStatus{order.StatusPending, order.StatusOpen, order.StatusPartiallyFilled}).
+		Find(&orders).Error; err != nil {
+		return nil, fmt.Errorf("order_repo: find all open: %w", err)
+	}
+	return orders, nil
+}
+
 func (r *orderRepository) FindByUserIDFiltered(ctx context.Context, userID, status, pairID string, limit, offset int) ([]order.Order, int64, error) {
 	q := r.db.WithContext(ctx).Model(&order.Order{}).Where("user_id = ?", userID)
 	if status != "" {

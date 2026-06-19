@@ -85,6 +85,7 @@ type UserTrade struct {
 type Service interface {
 	CreateOrder(ctx context.Context, userID string, req OrderRequest) (*Order, error)
 	CancelOrder(ctx context.Context, userID, orderID string) (*Order, error)
+	CleanupOpenOrders(ctx context.Context) error
 	// OrderBookDepth returns the live aggregated book for a pair in real
 	// (float) prices, best prices first. maxLevels <= 0 returns every level.
 	OrderBookDepth(ctx context.Context, pairID string, maxLevels int) (*OrderBookSnapshot, error)
@@ -117,6 +118,7 @@ type Repository interface {
 	Create(ctx context.Context, o *Order) error
 	FindByID(ctx context.Context, orderID string) (*Order, error)
 	FindByUserID(ctx context.Context, userID string) ([]Order, error)
+	FindAllOpen(ctx context.Context) ([]Order, error)
 	// FindByUserIDFiltered returns paginated orders for a user with optional
 	// status and pairID filters. Empty string = no filter.
 	FindByUserIDFiltered(ctx context.Context, userID, status, pairID string, limit, offset int) ([]Order, int64, error)

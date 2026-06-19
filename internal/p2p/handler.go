@@ -89,7 +89,6 @@ type createAdRequest struct {
 	MaxAmount     float64 `json:"max_amount"`
 	PaymentMethod string  `json:"payment_method"`
 	PaymentWindow int     `json:"payment_window"`
-	SellerAddress string  `json:"seller_address"`
 }
 
 // POST /api/v1/p2p/ads
@@ -109,7 +108,6 @@ func (h *Handler) CreateAd(w http.ResponseWriter, r *http.Request) {
 		MaxAmount:     req.MaxAmount,
 		PaymentMethod: req.PaymentMethod,
 		PaymentWindow: req.PaymentWindow,
-		SellerAddress: req.SellerAddress,
 	})
 	if err != nil {
 		writeErr(w, r, err)
@@ -187,7 +185,6 @@ func (h *Handler) SetAdStatus(w http.ResponseWriter, r *http.Request) {
 type createOrderRequest struct {
 	AdvertisementID string  `json:"advertisement_id"`
 	Amount          float64 `json:"amount"`
-	BuyerAddress    string  `json:"buyer_address"`
 }
 
 // POST /api/v1/p2p/orders
@@ -203,7 +200,6 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	order, err := h.uc.CreateOrder(r.Context(), uid, CreateOrderInput{
 		AdvertisementID: req.AdvertisementID,
 		Amount:          req.Amount,
-		BuyerAddress:    req.BuyerAddress,
 	})
 	if err != nil {
 		writeErr(w, r, err)
