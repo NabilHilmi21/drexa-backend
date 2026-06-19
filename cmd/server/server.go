@@ -12,6 +12,8 @@ import (
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 
+	"github.com/google/uuid"
+
 	"drexa/internal/auth"
 	authRepo "drexa/internal/auth/repository"
 	authSvc "drexa/internal/auth/service"
@@ -187,7 +189,19 @@ func (a *orderWalletAdapter) SettleTrade(ctx context.Context, tradeID string,
 			// Receive
 			wRec, err := a.repo.FindByUserAndCurrency(ctx, uID, wallet.CurrencyCode(recCur))
 			if err != nil {
-				return err
+				if err == wallet.ErrWalletNotFound {
+					wRec = &wallet.Wallet{
+						WalletID: uuid.NewString(),
+						UserID:   uID,
+						Currency: wallet.CurrencyCode(recCur),
+						Status:   wallet.WalletStatusActive,
+					}
+					if createErr := a.repo.Create(ctx, wRec); createErr != nil {
+						return createErr
+					}
+				} else {
+					return err
+				}
 			}
 			wRecLock, err := a.repo.FindByIDForUpdate(ctx, wRec.WalletID)
 			if err != nil {
@@ -241,6 +255,118 @@ func (a *pairListerAdapter) ActivePairIDs(ctx context.Context) ([]string, error)
 		Where("status = ?", market.StatusActive).
 		Pluck("pair_id", &ids).Error
 	return ids, err
+}
+
+// p2pWalletAdapter implements p2p.WalletService using the wallet module.
+type p2pWalletAdapter struct {
+	cryptoRepo wallet.CryptoAddressRepository
+	walletRepo wallet.WalletRepository
+	txRepo     wallet.TransactionRepository
+	tx         wallet.TxManager
+}
+
+func (a *p2pWalletAdapter) GetDepositAddress(ctx context.Context, userID, currency string) (string, error) {
+	cryptoAddr, err := a.cryptoRepo.FindByUserAndCurrency(ctx, userID, wallet.CurrencyCode(currency))
+	if err != nil {
+		if err == wallet.ErrCryptoAddressNotFound {
+			return "", errors.New("crypto address not generated for user")
+		}
+		return "", err
+	}
+	return cryptoAddr.Address, nil
+}
+
+func (a *p2pWalletAdapter) DebitBalance(ctx context.Context, userID, currency string, amount float64, refID, description string) error {
+	return a.tx.Do(ctx, func(ctx context.Context) error {
+		w, err := a.walletRepo.FindByUserAndCurrency(ctx, userID, wallet.CurrencyCode(currency))
+		if err != nil {
+			return err
+		}
+		wLock, err := a.walletRepo.FindByIDForUpdate(ctx, w.WalletID)
+		if err != nil {
+			return err
+		}
+		// Convert float64 amount to int64 based on currency decimals (e.g. 10^18 for ETH)
+		var amt int64
+		if currency == string(wallet.CurrencyETH) {
+			amt = int64(amount * 1_000_000_000_000_000_000.0)
+		} else if currency == string(wallet.CurrencyBTC) {
+			amt = int64(amount * 100_000_000.0)
+		} else {
+			amt = int64(amount * 10_000.0) // fallback for others
+		}
+
+		if wLock.Balance < amt {
+			return wallet.ErrInsufficientBalance
+		}
+
+		newBal := wLock.Balance - amt
+		if err := a.walletRepo.UpdateBalance(ctx, wLock.WalletID, newBal); err != nil {
+			return err
+		}
+
+		if err := a.txRepo.Create(ctx, &wallet.Transaction{
+			TxID:          uuid.NewString(),
+			WalletID:      wLock.WalletID,
+			UserID:        userID,
+			Type:          wallet.TxTypeWithdrawal,
+			Status:        wallet.TxStatusCompleted,
+			Amount:        amt,
+			BalanceBefore: wLock.Balance,
+			BalanceAfter:  newBal,
+			Currency:      wallet.CurrencyCode(currency),
+			RefID:         refID,
+			Description:   description,
+		}); err != nil {
+			return err
+		}
+
+		return nil
+	})
+}
+
+func (a *p2pWalletAdapter) CreditBalance(ctx context.Context, userID, currency string, amount float64, refID, description string) error {
+	return a.tx.Do(ctx, func(ctx context.Context) error {
+		w, err := a.walletRepo.FindByUserAndCurrency(ctx, userID, wallet.CurrencyCode(currency))
+		if err != nil {
+			return err
+		}
+		wLock, err := a.walletRepo.FindByIDForUpdate(ctx, w.WalletID)
+		if err != nil {
+			return err
+		}
+		var amt int64
+		if currency == string(wallet.CurrencyETH) {
+			amt = int64(amount * 1_000_000_000_000_000_000.0)
+		} else if currency == string(wallet.CurrencyBTC) {
+			amt = int64(amount * 100_000_000.0)
+		} else {
+			amt = int64(amount * 10_000.0) // fallback for others
+		}
+
+		newBal := wLock.Balance + amt
+		if err := a.walletRepo.UpdateBalance(ctx, wLock.WalletID, newBal); err != nil {
+			return err
+		}
+
+		if err := a.txRepo.Create(ctx, &wallet.Transaction{
+			TxID:          uuid.NewString(),
+			WalletID:      wLock.WalletID,
+			UserID:        userID,
+			Type:          wallet.TxTypeDeposit,
+			Status:        wallet.TxStatusCompleted,
+			Amount:        amt,
+			BalanceBefore: wLock.Balance,
+			BalanceAfter:  newBal,
+			Currency:      wallet.CurrencyCode(currency),
+			RefID:         refID,
+			Description:   description,
+		}); err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 type Server struct {
@@ -319,6 +445,11 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 		tx:     txManager,
 	})
 
+	// Cancel any orphaned open orders from previous run to release locked balances
+	if err := orderService.CleanupOpenOrders(context.Background()); err != nil {
+		log.Error().Err(err).Msg("failed to cleanup open orders on startup")
+	}
+
 	// ── Market data (real-time WebSocket feed) ─────────────────────────────────
 	// The /market/ws feed publishes both our internal order-book depth and
 	// 24h ticker stats proxied from Binance, so the frontend has no need for
@@ -357,8 +488,15 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 	} else {
 		log.Info().Msg("p2p escrow chain client connected")
 	}
-	p2pUsecase := p2pUc.New(p2pRepository, escrowClient, cfg.Escrow.ConfirmTimeout)
-	p2pAdminUsecase := p2pUc.NewAdmin(p2pRepository, escrowClient, cfg.Escrow.ConfirmTimeout)
+	p2pWalletAdapter := &p2pWalletAdapter{
+		cryptoRepo: cryptoAddressRepo,
+		walletRepo: walletRepository,
+		txRepo:     txRepository,
+		tx:         txManager,
+	}
+
+	p2pUsecase := p2pUc.New(p2pRepository, escrowClient, cfg.Escrow.ConfirmTimeout, p2pWalletAdapter)
+	p2pAdminUsecase := p2pUc.NewAdmin(p2pRepository, escrowClient, cfg.Escrow.ConfirmTimeout, p2pWalletAdapter)
 	p2pHandler := p2p.NewHandler(p2pUsecase, p2pAdminUsecase, getUserID)
 
 	// ── HTTP ──────────────────────────────────────────────────────────────────

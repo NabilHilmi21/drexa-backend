@@ -398,3 +398,48 @@ func (s *service) CancelOrder(ctx context.Context, userID, orderID string) (*Ord
 
 	return o, nil
 }
+
+// CleanupOpenOrders cancels all open orders and releases their locked balances.
+// This is typically called on backend startup to clean up state after a crash or restart.
+func (s *service) CleanupOpenOrders(ctx context.Context) error {
+	orders, err := s.repo.FindAllOpen(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, o := range orders {
+		// Unlock any remaining locked balance for this order.
+		if o.Type == TypeLimit && o.LockedAmount > 0 {
+			var unlockCurrency string
+			switch o.Side {
+			case SideBuy:
+				pair, _ := s.pairs.GetPair(ctx, o.PairID)
+				if pair != nil {
+					unlockCurrency = pair.QuoteCoin
+				}
+			case SideSell:
+				pair, _ := s.pairs.GetPair(ctx, o.PairID)
+				if pair != nil {
+					unlockCurrency = pair.BaseCoin
+				}
+			}
+			if unlockCurrency != "" {
+				var remaining float64
+				if o.Side == SideBuy {
+					remaining = (o.Quantity - o.FilledQuantity) * *o.Price
+				} else {
+					remaining = o.Quantity - o.FilledQuantity
+				}
+				if remaining > 0 {
+					unlockAmt := int64(remaining * float64(smallestUnitFactor(unlockCurrency)))
+					_ = s.walletSvc.UnlockBalance(context.Background(), o.UserID, unlockCurrency, unlockAmt)
+				}
+			}
+		}
+
+		o.Status = StatusCancelled
+		_ = s.repo.Update(ctx, &o)
+	}
+
+	return nil
+}

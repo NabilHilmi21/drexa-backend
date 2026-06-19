@@ -3,6 +3,7 @@ package wallet
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -362,11 +363,6 @@ func HandleInitiateWithdrawal(uc WalletUsecase) http.HandlerFunc {
 			return
 		}
 
-		// KYC gate — withdrawal requires an approved KYC submission (level >= 1)
-		if claims.KycLevel < 1 {
-			sendJSON(w, http.StatusForbidden, MessageResponse{Error: "KYC verification required before withdrawal"})
-			return
-		}
 
 		var req InitiateWithdrawalHTTPRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -388,7 +384,8 @@ func HandleInitiateWithdrawal(uc WalletUsecase) http.HandlerFunc {
 			case ErrWalletSuspended, ErrWithdrawalPending:
 				sendJSON(w, http.StatusForbidden, MessageResponse{Error: err.Error()})
 			default:
-				sendJSON(w, http.StatusInternalServerError, MessageResponse{Error: "withdrawal initiation failed"})
+				log.Printf("withdrawal initiation failed: %v", err)
+				sendJSON(w, http.StatusInternalServerError, MessageResponse{Error: "withdrawal initiation failed: " + err.Error()})
 			}
 			return
 		}

@@ -153,7 +153,7 @@ type WebhookPayload struct {
 
 type InternalTransferRequest struct {
 	FromUserID string       `json:"from_user_id"`
-	ToUserID   string       `json:"to_user_id"`
+	ToAddress  string       `json:"to_address"`
 	Currency   CurrencyCode `json:"currency"`
 	Amount     int64        `json:"amount"` // in smallest unit
 }

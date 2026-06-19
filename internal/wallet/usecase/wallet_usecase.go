@@ -109,7 +109,17 @@ func (uc *walletUsecase) InitiateDeposit(ctx context.Context, userID string, req
 		return nil, wallet.ErrInvalidAmount
 	}
 
-	w, err := uc.GetOrCreate(ctx, userID, req.Currency)
+	stripeCurrency := req.Currency
+	stripeAmount := req.Amount
+	dbCurrency := req.Currency
+	dbAmount := req.Amount
+
+	if req.Currency == wallet.CurrencyUSD {
+		dbCurrency = wallet.CurrencyUSDT
+		dbAmount = req.Amount * 10000 // 1 cent = 10,000 micro-USDT
+	}
+
+	w, err := uc.GetOrCreate(ctx, userID, dbCurrency)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +130,7 @@ func (uc *walletUsecase) InitiateDeposit(ctx context.Context, userID string, req
 	depositID := uuid.New().String()
 
 	// Create payment session with provider
-	_, providerRef, err := uc.paymentSvc.CreatePaymentSession(ctx, depositID, req.Amount, req.Currency, req.UserEmail)
+	_, providerRef, err := uc.paymentSvc.CreatePaymentSession(ctx, depositID, stripeAmount, stripeCurrency, req.UserEmail)
 	if err != nil {
 		return nil, fmt.Errorf("create payment session: %w", err)
 	}
@@ -129,8 +139,8 @@ func (uc *walletUsecase) InitiateDeposit(ctx context.Context, userID string, req
 		DepositID:   depositID,
 		UserID:      userID,
 		WalletID:    w.WalletID,
-		Amount:      req.Amount,
-		Currency:    req.Currency,
+		Amount:      dbAmount,
+		Currency:    dbCurrency,
 		Provider:    "stripe",
 		ProviderRef: providerRef,
 		Status:      wallet.TxStatusPending,
@@ -151,7 +161,17 @@ func (uc *walletUsecase) CreateDepositIntent(ctx context.Context, userID string,
 		return nil, wallet.ErrInvalidAmount
 	}
 
-	w, err := uc.GetOrCreate(ctx, userID, req.Currency)
+	stripeCurrency := req.Currency
+	stripeAmount := req.Amount
+	dbCurrency := req.Currency
+	dbAmount := req.Amount
+
+	if req.Currency == wallet.CurrencyUSD {
+		dbCurrency = wallet.CurrencyUSDT
+		dbAmount = req.Amount * 10000 // 1 cent = 10,000 micro-USDT
+	}
+
+	w, err := uc.GetOrCreate(ctx, userID, dbCurrency)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +181,7 @@ func (uc *walletUsecase) CreateDepositIntent(ctx context.Context, userID string,
 
 	depositID := uuid.New().String()
 
-	clientSecret, providerRef, err := uc.paymentSvc.CreatePaymentIntent(ctx, depositID, req.Amount, req.Currency, req.UserEmail)
+	clientSecret, providerRef, err := uc.paymentSvc.CreatePaymentIntent(ctx, depositID, stripeAmount, stripeCurrency, req.UserEmail)
 	if err != nil {
 		return nil, fmt.Errorf("create payment intent: %w", err)
 	}
@@ -170,8 +190,8 @@ func (uc *walletUsecase) CreateDepositIntent(ctx context.Context, userID string,
 		DepositID:   depositID,
 		UserID:      userID,
 		WalletID:    w.WalletID,
-		Amount:      req.Amount,
-		Currency:    req.Currency,
+		Amount:      dbAmount,
+		Currency:    dbCurrency,
 		Provider:    "stripe",
 		ProviderRef: providerRef,
 		Status:      wallet.TxStatusPending,
@@ -274,8 +294,25 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 		return nil, wallet.ErrRecipientRequired
 	}
 
+	dbCurrency := req.Currency
+	dbAmount := req.Amount
+	disburseCurrency := req.Currency
+	disburseAmount := req.Amount
+
+	if req.Currency == wallet.CurrencyUSD {
+		dbCurrency = wallet.CurrencyUSDT
+		dbAmount = req.Amount * 10000 // cents to micro-USDT
+		disburseCurrency = wallet.CurrencyUSD
+		disburseAmount = req.Amount
+	} else if req.Currency == wallet.CurrencyUSDT {
+		dbCurrency = wallet.CurrencyUSDT
+		dbAmount = req.Amount
+		disburseCurrency = wallet.CurrencyUSD
+		disburseAmount = req.Amount / 10000 // micro-USDT to cents
+	}
+
 	// Resolve the wallet id outside the transaction; the balance decision happens under lock below.
-	w, err := uc.walletRepo.FindByUserAndCurrency(ctx, userID, req.Currency)
+	w, err := uc.walletRepo.FindByUserAndCurrency(ctx, userID, dbCurrency)
 	if err != nil {
 		return nil, err
 	}
@@ -284,8 +321,8 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 		WithdrawalID: uuid.New().String(),
 		UserID:       userID,
 		WalletID:     w.WalletID,
-		Amount:       req.Amount,
-		Currency:     req.Currency,
+		Amount:       dbAmount,
+		Currency:     dbCurrency,
 		PayPalEmail:  strings.TrimSpace(req.PayPalEmail),
 		Status:       wallet.TxStatusPending,
 	}
@@ -308,11 +345,11 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 			return wallet.ErrWithdrawalPending
 		}
 
-		if locked.Available() < req.Amount {
+		if locked.Available() < dbAmount {
 			return wallet.ErrInsufficientBalance
 		}
 
-		if err := uc.walletRepo.UpdateLocked(ctx, locked.WalletID, locked.Locked+req.Amount); err != nil {
+		if err := uc.walletRepo.UpdateLocked(ctx, locked.WalletID, locked.Locked+dbAmount); err != nil {
 			return fmt.Errorf("lock balance: %w", err)
 		}
 		if err := uc.withdrawalRepo.Create(ctx, withdrawalReq); err != nil {
@@ -327,8 +364,8 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 	// 2. Pay out via the disbursement provider (PayPal) outside the DB lock
 	providerRef, err := uc.disburseSvc.CreateDisbursement(ctx, &wallet.DisbursementRequest{
 		WithdrawalID:   withdrawalReq.WithdrawalID,
-		Amount:         withdrawalReq.Amount,
-		Currency:       withdrawalReq.Currency,
+		Amount:         disburseAmount,
+		Currency:       disburseCurrency,
 		RecipientEmail: withdrawalReq.PayPalEmail,
 	})
 
@@ -337,7 +374,7 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 		// Failed: release the locked amount and mark failed
 		_ = uc.tx.Do(ctx, func(ctx context.Context) error {
 			locked, _ := uc.walletRepo.FindByIDForUpdate(ctx, w.WalletID)
-			_ = uc.walletRepo.UpdateLocked(ctx, locked.WalletID, locked.Locked-req.Amount)
+			_ = uc.walletRepo.UpdateLocked(ctx, locked.WalletID, locked.Locked-dbAmount)
 			_ = uc.withdrawalRepo.UpdateStatus(ctx, withdrawalReq.WithdrawalID, wallet.TxStatusFailed, "", err.Error())
 			return nil
 		})
@@ -351,8 +388,8 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 			return err
 		}
 		balanceBefore := locked.Balance
-		newBalance := locked.Balance - req.Amount
-		newLocked := locked.Locked - req.Amount
+		newBalance := locked.Balance - dbAmount
+		newLocked := locked.Locked - dbAmount
 
 		if err := uc.walletRepo.UpdateBalance(ctx, locked.WalletID, newBalance); err != nil {
 			return err
@@ -366,10 +403,10 @@ func (uc *walletUsecase) InitiateWithdrawal(ctx context.Context, userID string, 
 			UserID:        withdrawalReq.UserID,
 			Type:          wallet.TxTypeWithdrawal,
 			Status:        wallet.TxStatusCompleted,
-			Amount:        req.Amount,
+			Amount:        dbAmount,
 			BalanceBefore: balanceBefore,
 			BalanceAfter:  newBalance,
-			Currency:      req.Currency,
+			Currency:      dbCurrency,
 			RefID:         withdrawalReq.WithdrawalID,
 			Description:   fmt.Sprintf("Withdrawal to PayPal %s", withdrawalReq.PayPalEmail),
 		}); err != nil {
@@ -402,15 +439,27 @@ func (uc *walletUsecase) Transfer(ctx context.Context, req *wallet.InternalTrans
 	if req.Amount <= 0 {
 		return nil, wallet.ErrInvalidAmount
 	}
-	if req.FromUserID == req.ToUserID {
+
+	// Resolve the recipient's CryptoAddress to a UserID
+	cryptoAddr, err := uc.cryptoAddressRepo.FindByAddress(ctx, req.ToAddress)
+	if err != nil {
+		if err == wallet.ErrCryptoAddressNotFound {
+			return nil, errors.New("destination address is not a valid Drexa user wallet")
+		}
+		return nil, err
+	}
+	
+	toUserID := cryptoAddr.UserID
+
+	if req.FromUserID == toUserID {
 		return nil, errors.New("cannot transfer to self")
 	}
 
 	var txDebit *wallet.Transaction
-	err := uc.tx.Do(ctx, func(ctx context.Context) error {
+	err = uc.tx.Do(ctx, func(ctx context.Context) error {
 		// We must lock the two wallets in a consistent order to prevent deadlocks.
 		// Ordering by UserID string comparison is a standard approach.
-		firstID, secondID := req.FromUserID, req.ToUserID
+		firstID, secondID := req.FromUserID, toUserID
 		if firstID > secondID {
 			firstID, secondID = secondID, firstID
 		}
@@ -429,7 +478,7 @@ func (uc *walletUsecase) Transfer(ctx context.Context, req *wallet.InternalTrans
 
 		// Identify which locked wallet is sender and receiver
 		var senderLocked, receiverLocked *wallet.Wallet
-		if wFirstLocked.UserID == req.FromUserID {
+		if firstID == req.FromUserID {
 			senderLocked, receiverLocked = wFirstLocked, wSecondLocked
 		} else {
 			senderLocked, receiverLocked = wSecondLocked, wFirstLocked
@@ -508,7 +557,7 @@ func (uc *walletUsecase) InitiateCryptoWithdrawal(ctx context.Context, userID st
 		
 		internalReq := &wallet.InternalTransferRequest{
 			FromUserID: userID,
-			ToUserID:   cryptoAddr.UserID,
+			ToAddress:  req.ToAddress,
 			Currency:   req.Currency,
 			Amount:     req.Amount,
 		}
