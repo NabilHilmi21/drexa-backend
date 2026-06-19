@@ -30,6 +30,7 @@ import (
 	p2pRepo "drexa/internal/p2p/repository"
 	p2pUc "drexa/internal/p2p/usecase"
 	"drexa/internal/platform/middleware"
+	"drexa/internal/wallet"
 	walletRepo "drexa/internal/wallet/repository"
 	walletSvc "drexa/internal/wallet/service"
 	walletUc "drexa/internal/wallet/usecase"
@@ -79,6 +80,20 @@ func toMarketLevels(levels []order.OrderBookLevel) []market.BookLevel {
 		out[i] = market.BookLevel{Price: l.Price, Quantity: l.Quantity}
 	}
 	return out
+}
+
+// orderWalletAdapter bridges wallet.WalletRepository to order.WalletService
+// so the order domain can check available balance without importing internal/wallet.
+type orderWalletAdapter struct {
+	repo wallet.WalletRepository
+}
+
+func (a *orderWalletAdapter) AvailableBalance(ctx context.Context, userID, currency string) (int64, error) {
+	w, err := a.repo.FindByUserAndCurrency(ctx, userID, wallet.CurrencyCode(currency))
+	if err != nil {
+		return 0, nil // no wallet = zero balance
+	}
+	return w.Available(), nil
 }
 
 // pairListerAdapter lists active trading pairs from the market.TradingPair
@@ -158,7 +173,6 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 	orderRepository := orderRepo.New(db)
 	pairService := orderRepo.NewPairService(db)
 	matchingEngine := matching.NewEngine()
-	orderService := order.NewService(orderRepository, pairService, matchingEngine)
 
 	// ── Wallet domain ─────────────────────────────────────────────────────────
 	walletRepository := walletRepo.NewWalletRepository(db)
@@ -182,6 +196,9 @@ func NewServer(cfg *config.Config, db *gorm.DB) *Server {
 	walletUsecase        := walletUc.NewWalletUsecase(walletRepository, txRepository, depositRepository, withdrawalRepository, paymentService, disbursementService, cryptoProvider, txManager)
 	adminWalletUsecase   := walletUc.NewAdminWalletUsecase(walletRepository, txRepository, withdrawalRepository, disbursementService, txManager)
 	cryptoWalletUsecase  := walletUc.NewCryptoWalletUsecase(cryptoAddressRepo, walletRepository, txRepository, txManager, cryptoProvider, false)
+
+	// orderService wired here (after wallet repos) so it can inject balance checks.
+	orderService := order.NewService(orderRepository, pairService, matchingEngine, &orderWalletAdapter{repo: walletRepository})
 
 	// ── Market data (real-time WebSocket feed) ─────────────────────────────────
 	// The /market/ws feed publishes both our internal order-book depth and

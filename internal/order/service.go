@@ -2,6 +2,7 @@ package order
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,15 +11,33 @@ import (
 )
 
 type service struct {
-	repo    Repository
-	pairs   PairService
-	matcher Matcher
+	repo       Repository
+	pairs      PairService
+	matcher    Matcher
+	walletSvc  WalletService
 }
 
 // NewService wires the order service with its persistence, the market-backed
-// trading-pair lookup, and the in-memory matching engine.
-func NewService(repo Repository, pairs PairService, matcher Matcher) Service {
-	return &service{repo: repo, pairs: pairs, matcher: matcher}
+// trading-pair lookup, the in-memory matching engine, and wallet balance checks.
+func NewService(repo Repository, pairs PairService, matcher Matcher, walletSvc WalletService) Service {
+	return &service{repo: repo, pairs: pairs, matcher: matcher, walletSvc: walletSvc}
+}
+
+// smallestUnitFactor returns how many of the currency's base units equal one
+// whole unit. Used to convert float order amounts into the int64 stored by wallets.
+func smallestUnitFactor(currency string) int64 {
+	switch currency {
+	case "BTC":
+		return 100_000_000
+	case "ETH", "BNB":
+		return 1_000_000_000_000_000_000
+	case "SOL":
+		return 1_000_000_000
+	case "USDT":
+		return 1_000_000
+	default: // USD, IDR
+		return 100
+	}
 }
 
 // CreateOrder validates the request, persists the order in a pending state,
@@ -54,6 +73,29 @@ func (s *service) CreateOrder(ctx context.Context, userID string, req OrderReque
 	}
 	if req.Quantity < pair.MinOrderSize {
 		return nil, ErrBelowMinOrderSize
+	}
+
+	// For limit orders: validate that the user holds enough balance before
+	// persisting. Market orders are priced at match time so we skip the check.
+	if req.Type == TypeLimit {
+		var checkCurrency string
+		var checkAmount float64
+		switch req.Side {
+		case SideBuy:
+			checkCurrency = pair.QuoteCoin
+			checkAmount = req.Quantity * *req.Price
+		case SideSell:
+			checkCurrency = pair.BaseCoin
+			checkAmount = req.Quantity
+		}
+		available, err := s.walletSvc.AvailableBalance(ctx, userID, checkCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("balance check: %w", err)
+		}
+		needed := int64(checkAmount * float64(smallestUnitFactor(checkCurrency)))
+		if available < needed {
+			return nil, ErrInsufficientBalance
+		}
 	}
 
 	o := &Order{

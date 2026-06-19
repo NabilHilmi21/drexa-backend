@@ -150,6 +150,8 @@ func HandleOrder(orderSvc Service) http.Handler {
 			switch {
 			case errors.Is(err, ErrPairNotFound):
 				sendJSON(w, http.StatusNotFound, MessageResponse{Error: err.Error()})
+			case errors.Is(err, ErrInsufficientBalance):
+				sendJSON(w, http.StatusUnprocessableEntity, MessageResponse{Error: err.Error()})
 			case errors.Is(err, ErrInvalidSide),
 				errors.Is(err, ErrInvalidType),
 				errors.Is(err, ErrPriceRequired),

@@ -32,6 +32,8 @@ func (r *pairRepository) GetPair(ctx context.Context, pairID string) (*order.Pai
 
 	return &order.PairInfo{
 		PairID:        p.PairID,
+		BaseCoin:      p.BaseCoin,
+		QuoteCoin:     p.QuoteCoin,
 		Active:        p.Status == market.StatusActive,
 		MinOrderSize:  p.MinOrderSize,
 		PriceDecimals: p.PriceDecimalPlaces,

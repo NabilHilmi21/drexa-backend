@@ -81,15 +81,17 @@ type ResendConfig struct {
 }
 
 type TatumConfig struct {
-	APIKey        string
+	APIKey         string
 	BTCGatewayURL  string
 	ETHGatewayURL  string
 	WebhookBaseURL string
 	BTCXpub        string
-	ETHXpub       string
-	BTCAddress    string
-	BTCPrivateKey string
-	ETHPrivateKey string
+	ETHXpub        string
+	SOLAddress     string // Solana hot-wallet address (all users share one address)
+	BNBXpub        string // BSC master xpub for per-user HD derivation
+	BTCAddress     string
+	BTCPrivateKey  string
+	ETHPrivateKey  string
 }
 
 type StripeConfig struct {
@@ -171,6 +173,8 @@ func Load() *Config {
 	if ethXpub == "" {
 		ethXpub = viper.GetString("ETH_MASTER_ADDRESS")
 	}
+	bnbXpub := viper.GetString("BNB_MASTER_XPUB")
+	solAddress := viper.GetString("SOL_HOT_ADDRESS")
 
 	return &Config{
 		App: AppConfig{
@@ -215,7 +219,9 @@ func Load() *Config {
 			WebhookBaseURL: viper.GetString("TATUM_WEBHOOK_BASE_URL"),
 			BTCXpub:        btcXpub,
 			ETHXpub:        ethXpub,
-			BTCAddress:     viper.GetString("BTC_HOT_ADDRESS"), // funded hot-wallet address for the BTC_MASTER_PRIVATE_KEY (NOT the xpub)
+			SOLAddress:     solAddress,
+			BNBXpub:        bnbXpub,
+			BTCAddress:     viper.GetString("BTC_HOT_ADDRESS"),
 			BTCPrivateKey:  viper.GetString("BTC_MASTER_PRIVATE_KEY"),
 			ETHPrivateKey:  viper.GetString("ETH_MASTER_PRIVATE_KEY"),
 		},

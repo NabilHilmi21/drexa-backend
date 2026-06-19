@@ -19,15 +19,20 @@ type chainInfo struct {
 
 func chainFor(c wallet.CurrencyCode, testnet bool) (chainInfo, bool) {
 	table := map[wallet.CurrencyCode]chainInfo{
-		wallet.CurrencyBTC: {chain: "bitcoin", mainnet: "Bitcoin", testnet: "Bitcoin testnet"},
-		wallet.CurrencyETH: {chain: "ethereum", mainnet: "Ethereum", testnet: "Ethereum testnet (Sepolia)"},
+		wallet.CurrencyBTC:  {chain: "bitcoin", mainnet: "Bitcoin", testnet: "Bitcoin testnet"},
+		wallet.CurrencyETH:  {chain: "ethereum", mainnet: "Ethereum", testnet: "Ethereum testnet (Sepolia)"},
+		wallet.CurrencySOL:  {chain: "solana", mainnet: "Solana", testnet: "Solana devnet"},
+		wallet.CurrencyUSDT: {chain: "ethereum", mainnet: "Ethereum (ERC-20)", testnet: "Ethereum testnet (ERC-20)"},
+		wallet.CurrencyBNB:  {chain: "bsc", mainnet: "BNB Smart Chain", testnet: "BSC testnet"},
 	}
 	info, ok := table[c]
 	return info, ok
 }
 
 // supportedCryptoCurrencies lists currencies the crypto provider can serve addresses for.
-var supportedCryptoCurrencies = []wallet.CurrencyCode{wallet.CurrencyBTC, wallet.CurrencyETH}
+var supportedCryptoCurrencies = []wallet.CurrencyCode{
+	wallet.CurrencyBTC, wallet.CurrencyETH, wallet.CurrencySOL, wallet.CurrencyUSDT, wallet.CurrencyBNB,
+}
 
 type cryptoWalletUsecase struct {
 	addrRepo   wallet.CryptoAddressRepository
@@ -72,6 +77,28 @@ func (uc *cryptoWalletUsecase) getOrCreateAddress(ctx context.Context, userID st
 		return nil, info, err
 	}
 
+	// Solana uses a single hot-wallet address for all users (no xpub HD derivation).
+	// Deposits are attributed to users by memo/reference at the application layer.
+	if info.chain == "solana" {
+		solAddr, err := uc.provider.GetXpub("solana")
+		if err != nil {
+			return nil, info, fmt.Errorf("get SOL address: %w", err)
+		}
+		rec := &wallet.CryptoAddress{
+			ID:              uuid.NewString(),
+			UserID:          userID,
+			Currency:        currency,
+			Chain:           info.chain,
+			Address:         solAddr,
+			Xpub:            solAddr,
+			DerivationIndex: 0,
+		}
+		if err := uc.addrRepo.Create(ctx, rec); err != nil {
+			return nil, info, fmt.Errorf("save address: %w", err)
+		}
+		return rec, info, nil
+	}
+
 	// Look up the master xpub for the chain
 	xpub, err := uc.provider.GetXpub(info.chain)
 	if err != nil {
@@ -84,18 +111,7 @@ func (uc *cryptoWalletUsecase) getOrCreateAddress(ctx context.Context, userID st
 		return nil, info, fmt.Errorf("get highest derivation index: %w", err)
 	}
 
-	nextIndex := highestIndex
-	// If the DB is completely empty for this chain, GetHighestDerivationIndex returns 0 (COALESCE).
-	// Actually, we need to be careful: the first user gets index 1, or 0? 
-	// If we use COALESCE(MAX(derivation_index), -1) we can get 0. 
-	// Or we can just increment by 1. Since COALESCE returned 0, if there are NO records, highest is 0. 
-	// So let's check if there are NO records. Actually just incrementing from 0 is fine, 
-	// but wait: if the first user uses 0, the max is 0. The next user should use 1.
-	// But `COALESCE(MAX, 0)` returns 0 for an empty table AND for a table where max is 0.
-	// That's a tiny bug. Let's assume the first derivation index is 1. We will do:
-	// wait, let's just do `highestIndex + 1`. The first user will be index 1.
-	// If the table was empty, highest is 0, so first user is 1. If max is 1, next is 2.
-	nextIndex = highestIndex + 1
+	nextIndex := highestIndex + 1
 
 	address, err := uc.provider.DeriveAddress(ctx, info.chain, xpub, nextIndex)
 	if err != nil {
@@ -170,13 +186,19 @@ func (uc *cryptoWalletUsecase) HandleCryptoWebhook(ctx context.Context, payload 
 
 	requiredConf := 1
 	if !uc.testnet {
-		if addrRec.Currency == wallet.CurrencyBTC {
+		switch addrRec.Currency {
+		case wallet.CurrencyBTC:
 			requiredConf = 3
-		} else if addrRec.Currency == wallet.CurrencyETH {
+		case wallet.CurrencyETH, wallet.CurrencyUSDT:
 			requiredConf = 12
+		case wallet.CurrencyBNB:
+			requiredConf = 15
+		case wallet.CurrencySOL:
+			requiredConf = 32
 		}
 	} else {
-		if addrRec.Currency == wallet.CurrencyETH {
+		switch addrRec.Currency {
+		case wallet.CurrencyETH, wallet.CurrencyUSDT:
 			requiredConf = 2
 		}
 	}
@@ -227,11 +249,16 @@ func (uc *cryptoWalletUsecase) HandleCryptoWebhook(ctx context.Context, payload 
 		}
 
 		var amountInt64 int64
-		if addrRec.Currency == wallet.CurrencyBTC {
-			amountInt64 = int64(amountFloat * 100_000_000) // 10^8 satoshis
-		} else if addrRec.Currency == wallet.CurrencyETH {
-			amountInt64 = int64(amountFloat * 1_000_000_000_000_000_000) // 10^18 wei
-		} else {
+		switch addrRec.Currency {
+		case wallet.CurrencyBTC:
+			amountInt64 = int64(amountFloat * 100_000_000) // satoshis (10^8)
+		case wallet.CurrencyETH, wallet.CurrencyBNB:
+			amountInt64 = int64(amountFloat * 1_000_000_000_000_000_000) // wei (10^18)
+		case wallet.CurrencyUSDT:
+			amountInt64 = int64(amountFloat * 1_000_000) // micro-USDT (10^6)
+		case wallet.CurrencySOL:
+			amountInt64 = int64(amountFloat * 1_000_000_000) // lamports (10^9)
+		default:
 			return wallet.ErrUnsupportedCurrency
 		}
 

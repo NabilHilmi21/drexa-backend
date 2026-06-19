@@ -13,10 +13,13 @@ import (
 type CurrencyCode string
 
 const (
-	CurrencyIDR CurrencyCode = "IDR"
-	CurrencyUSD CurrencyCode = "USD"
-	CurrencyBTC CurrencyCode = "BTC"
-	CurrencyETH CurrencyCode = "ETH"
+	CurrencyIDR  CurrencyCode = "IDR"
+	CurrencyUSD  CurrencyCode = "USD"
+	CurrencyBTC  CurrencyCode = "BTC"
+	CurrencyETH  CurrencyCode = "ETH"
+	CurrencySOL  CurrencyCode = "SOL"
+	CurrencyUSDT CurrencyCode = "USDT"
+	CurrencyBNB  CurrencyCode = "BNB"
 )
 
 // WalletStatus is a defined type to control wallet lifecycle

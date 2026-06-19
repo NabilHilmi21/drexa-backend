@@ -82,18 +82,29 @@ func (s *TatumService) GenerateWallet(ctx context.Context, chain string) (string
 	return resp.Xpub, nil
 }
 
-// GetXpub returns the configured master extended public key for the chain.
+// GetXpub returns the configured master extended public key (or hot-wallet address for Solana) for a chain.
 func (s *TatumService) GetXpub(chain string) (string, error) {
-	if chain == "bitcoin" {
+	switch chain {
+	case "bitcoin":
 		if s.cfg.BTCXpub == "" {
 			return "", fmt.Errorf("missing BTC master xpub in config")
 		}
 		return s.cfg.BTCXpub, nil
-	} else if chain == "ethereum" {
+	case "ethereum":
 		if s.cfg.ETHXpub == "" {
 			return "", fmt.Errorf("missing ETH master xpub in config")
 		}
 		return s.cfg.ETHXpub, nil
+	case "bsc":
+		if s.cfg.BNBXpub == "" {
+			return "", fmt.Errorf("missing BNB master xpub in config (BNB_MASTER_XPUB)")
+		}
+		return s.cfg.BNBXpub, nil
+	case "solana":
+		if s.cfg.SOLAddress == "" {
+			return "", fmt.Errorf("missing SOL hot-wallet address in config (SOL_HOT_ADDRESS)")
+		}
+		return s.cfg.SOLAddress, nil
 	}
 	return "", fmt.Errorf("unsupported chain for xpub: %s", chain)
 }

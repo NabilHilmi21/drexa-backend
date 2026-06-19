@@ -140,9 +140,11 @@ type Matcher interface {
 // PairInfo is the minimal trading-pair data the order domain needs.
 // Avoids a direct import of internal/market in the domain layer.
 type PairInfo struct {
-	PairID       string
-	Active       bool
-	MinOrderSize float64
+	PairID        string
+	BaseCoin      string // e.g. "BTC"
+	QuoteCoin     string // e.g. "USD"
+	Active        bool
+	MinOrderSize  float64
 	// PriceDecimals is the number of decimal places a price is quoted to.
 	// Used to convert float prices into the integer ticks the engine matches on.
 	PriceDecimals int
@@ -154,17 +156,25 @@ type PairService interface {
 	GetPair(ctx context.Context, pairID string) (*PairInfo, error)
 }
 
+// WalletService is the narrow interface the order domain needs from the wallet
+// domain to validate available balance before persisting an order.
+// Returns 0, nil when no wallet exists (treated as zero balance).
+type WalletService interface {
+	AvailableBalance(ctx context.Context, userID, currency string) (int64, error)
+}
+
 // ─── Domain Errors ───────────────────────────────────────────────────────────
 var (
 	ErrOrderNotFound       = errors.New("order not found")
 	ErrOrderNotCancellable = errors.New("order cannot be cancelled in current state")
 	ErrSelfTrade           = errors.New("self-trade prevention: buyer and seller are the same user")
 
-	ErrInvalidSide       = errors.New("side must be 'buy' or 'sell'")
-	ErrInvalidType       = errors.New("type must be 'market' or 'limit'")
-	ErrPriceRequired     = errors.New("price is required and must be greater than zero for limit orders")
-	ErrPriceNotAllowed   = errors.New("price must not be set for market orders")
-	ErrBelowMinOrderSize = errors.New("quantity is below the minimum order size for this pair")
-	ErrPairNotFound      = errors.New("trading pair not found")
-	ErrPairSuspended     = errors.New("trading pair is suspended")
+	ErrInvalidSide         = errors.New("side must be 'buy' or 'sell'")
+	ErrInvalidType         = errors.New("type must be 'market' or 'limit'")
+	ErrPriceRequired       = errors.New("price is required and must be greater than zero for limit orders")
+	ErrPriceNotAllowed     = errors.New("price must not be set for market orders")
+	ErrBelowMinOrderSize   = errors.New("quantity is below the minimum order size for this pair")
+	ErrPairNotFound        = errors.New("trading pair not found")
+	ErrPairSuspended       = errors.New("trading pair is suspended")
+	ErrInsufficientBalance = errors.New("insufficient balance to place this order")
 )
